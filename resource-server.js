@@ -11,6 +11,15 @@ const { log } = require('./helpers');
 const app = express();
 app.use(express.json());
 
+// CORS — allow browser dApps to call this server
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, X-Payment');
+  res.header('Access-Control-Expose-Headers', 'X-Payment-Response');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // Build the list of accepted payment options
 function buildAcceptsList(path) {
   const base = {
