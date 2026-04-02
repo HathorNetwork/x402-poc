@@ -39,7 +39,7 @@ services:
       FACILITATOR_URL: http://facilitator:8402
     command: ["node", "resource-server.js"]
     ports:
-      - "3001:3001"
+      - "4021:3001"
     depends_on:
       - wallet-headless
       - facilitator
@@ -49,6 +49,6 @@ services:
       context: ./dapp
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "4020:3000"
     depends_on:
       - resource-server
