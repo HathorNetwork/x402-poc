@@ -1,0 +1,63 @@
+services:
+  wallet-headless:
+    image: hathornetwork/hathor-wallet-headless:v0.39.1
+    environment:
+      HEADLESS_HTTP_BIND: "0.0.0.0"
+      HEADLESS_HTTP_PORT: "8000"
+      HEADLESS_NETWORK: testnet
+      HEADLESS_SERVER: http://node1.playground.testnet.hathor.network/v1a/
+      HEADLESS_SEED_DEFAULT: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+      HEADLESS_ENABLED_PLUGINS: debug
+    entrypoint: ["node", "dist/index.js"]
+    ports:
+      - "8000:8000"
+
+  facilitator:
+    build: .
+    environment:
+      FULLNODE_URL: http://node1.playground.testnet.hathor.network
+      WALLET_HEADLESS_URL: http://wallet-headless:8000
+      BLUEPRINT_ID: ${BLUEPRINT_ID:-}
+      CHANNEL_BLUEPRINT_ID: ${CHANNEL_BLUEPRINT_ID:-}
+      FACILITATOR_WALLET_ID: facilitator
+      FACILITATOR_ADDRESS: ${FACILITATOR_ADDRESS:-}
+      SELLER_ADDRESS: ${SELLER_ADDRESS:-}
+    command: ["node", "facilitator.js"]
+    ports:
+      - "8402:8402"
+    depends_on:
+      - wallet-headless
+
+  resource-server:
+    build: .
+    environment:
+      FULLNODE_URL: http://node1.playground.testnet.hathor.network
+      WALLET_HEADLESS_URL: http://wallet-headless:8000
+      BLUEPRINT_ID: ${BLUEPRINT_ID:-}
+      CHANNEL_BLUEPRINT_ID: ${CHANNEL_BLUEPRINT_ID:-}
+      FACILITATOR_ADDRESS: ${FACILITATOR_ADDRESS:-}
+      SELLER_ADDRESS: ${SELLER_ADDRESS:-}
+      RESOURCE_SERVER_PORT: "3001"
+    command: ["node", "resource-server.js"]
+    ports:
+      - "3001:3001"
+    depends_on:
+      - wallet-headless
+      - facilitator
+
+  dapp:
+    build:
+      context: ./dapp
+      dockerfile: Dockerfile
+    environment:
+      NEXT_PUBLIC_DEFAULT_NETWORK: testnet
+      NEXT_PUBLIC_HATHOR_NODE_URL_TESTNET: http://node1.playground.testnet.hathor.network/v1a
+      NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: "8264fff563181da658ce64ee80e80458"
+      NEXT_PUBLIC_BLUEPRINT_ID: ${BLUEPRINT_ID:-}
+      NEXT_PUBLIC_CHANNEL_BLUEPRINT_ID: ${CHANNEL_BLUEPRINT_ID:-}
+      NEXT_PUBLIC_FACILITATOR_ADDRESS: ${FACILITATOR_ADDRESS:-}
+      NEXT_PUBLIC_SELLER_ADDRESS: ${SELLER_ADDRESS:-}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - resource-server
