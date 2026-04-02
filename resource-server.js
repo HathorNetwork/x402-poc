@@ -30,7 +30,7 @@ function buildAcceptsList(path) {
 
   const accepts = [];
 
-  // Escrow options
+  // Escrow option
   accepts.push({
     scheme: 'hathor-escrow',
     network: 'hathor:privatenet',
@@ -44,7 +44,7 @@ function buildAcceptsList(path) {
     extra: { ...baseExtra, blueprintId: config.blueprintId },
   });
 
-  // Channel options
+  // Channel option
   if (config.channelBlueprintId) {
     accepts.push({
       scheme: 'hathor-channel',
@@ -55,7 +55,7 @@ function buildAcceptsList(path) {
       maxTimeoutSeconds: config.escrowDeadlineSeconds,
       asset: config.htrTokenUid,
       amount: String(config.htrPaymentAmount),
-      description: `Pay ${(config.htrPaymentAmount / 100).toFixed(2)} HTR via channel (instant if pre-funded)`,
+      description: `Pay ${(config.htrPaymentAmount / 100).toFixed(2)} HTR via channel (saves escrow creation)`,
       extra: { ...baseExtra, channelBlueprintId: config.channelBlueprintId },
     });
   }
@@ -80,7 +80,6 @@ function x402Middleware(req, res, next) {
   next();
 }
 
-// Build payment requirements from the accepts list
 function buildPaymentRequirements(path) {
   return buildAcceptsList(path).map(opt => ({
     scheme: opt.scheme,
@@ -91,7 +90,7 @@ function buildPaymentRequirements(path) {
   }));
 }
 
-// Verify payment with facilitator, serve resource, then settle
+// Verify + settle + serve
 app.get('/weather', x402Middleware, async (req, res) => {
   const payment = req.x402Payment;
   const scheme = payment.scheme;
@@ -114,9 +113,33 @@ app.get('/weather', x402Middleware, async (req, res) => {
     return res.status(402).json({ error: 'Payment invalid', reason: verification.invalidReason });
   }
 
-  log('RESOURCE-SERVER', `Payment VALID — serving resource`);
+  log('RESOURCE-SERVER', `Payment VALID`);
 
-  // Step 2: Serve the resource
+  // Step 2: Settle BEFORE serving the resource
+  // For channels: spend() must confirm so on-chain state is updated before next request
+  // For escrow: release() must confirm so funds reach the seller
+  log('RESOURCE-SERVER', `Settling ${scheme} id=${id}`);
+  const settleBody = { paymentPayload: payment };
+  if (isChannel) {
+    settleBody.amount = config.htrPaymentAmount;
+    settleBody.sellerAddress = config.sellerAddress;
+  }
+
+  const settleResp = await fetch(`http://localhost:${config.facilitatorPort}/x402/settle`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settleBody),
+  });
+  const settlement = await settleResp.json();
+
+  if (!settlement.success) {
+    log('RESOURCE-SERVER', `Settlement FAILED: ${settlement.error}`);
+    return res.status(500).json({ error: 'Settlement failed', reason: settlement.error });
+  }
+
+  log('RESOURCE-SERVER', `Settlement confirmed — txId=${settlement.txId}`);
+
+  // Step 3: Serve the resource (only after settlement is confirmed)
   const weatherData = {
     location: 'Sao Paulo, Brazil',
     temperature: 28,
@@ -127,32 +150,6 @@ app.get('/weather', x402Middleware, async (req, res) => {
     timestamp: new Date().toISOString(),
   };
 
-  // Step 3: Settle with facilitator (async)
-  log('RESOURCE-SERVER', `Requesting settlement for ${scheme} id=${id}`);
-  const settleBody = { paymentPayload: payment };
-
-  // Channel settle needs amount and seller
-  if (isChannel) {
-    settleBody.amount = config.htrPaymentAmount;
-    settleBody.sellerAddress = config.sellerAddress;
-  }
-
-  fetch(`http://localhost:${config.facilitatorPort}/x402/settle`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settleBody),
-  })
-    .then(r => r.json())
-    .then(result => {
-      if (result.success) {
-        log('RESOURCE-SERVER', `Settlement complete — txId=${result.txId}`);
-      } else {
-        log('RESOURCE-SERVER', `Settlement FAILED: ${result.error}`);
-      }
-    })
-    .catch(err => log('RESOURCE-SERVER', `Settlement error: ${err.message}`));
-
-  // Return the resource
   res.json({
     data: weatherData,
     payment: {
@@ -160,6 +157,7 @@ app.get('/weather', x402Middleware, async (req, res) => {
       scheme,
       network: 'hathor:privatenet',
       id,
+      settleTxId: settlement.txId,
     },
   });
 });
