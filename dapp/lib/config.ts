@@ -4,7 +4,7 @@ export const config = {
   useMockWallet: process.env.NEXT_PUBLIC_USE_MOCK_WALLET === 'true',
   defaultNetwork: (process.env.NEXT_PUBLIC_DEFAULT_NETWORK || 'privatenet') as Network,
   hathorNodeUrls: {
-    'privatenet': process.env.NEXT_PUBLIC_HATHOR_NODE_URL_PRIVATENET || 'http://127.0.0.1:49180/v1a',
+    'privatenet': process.env.NEXT_PUBLIC_HATHOR_NODE_URL_PRIVATENET || 'https://node1.playground.testnet.hathor.network/v1a',
     'testnet': process.env.NEXT_PUBLIC_HATHOR_NODE_URL_TESTNET || 'https://node1.india.testnet.hathor.network/v1a',
     'mainnet': process.env.NEXT_PUBLIC_HATHOR_NODE_URL_MAINNET || 'https://node1.mainnet.hathor.network/v1a',
   },
