@@ -26,7 +26,8 @@ module.exports = {
   htrTokenUid: '00',
   customTokenUid: env.CUSTOM_TOKEN_UID || '',
 
-  // Ports
+  // Service URLs and ports
+  facilitatorUrl: env.FACILITATOR_URL || `http://localhost:${env.FACILITATOR_PORT || '8402'}`,
   facilitatorPort: parseInt(env.FACILITATOR_PORT || '8402'),
   resourceServerPort: parseInt(env.RESOURCE_SERVER_PORT || '3000'),
 

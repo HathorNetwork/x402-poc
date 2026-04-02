@@ -23,7 +23,7 @@ app.use((req, res, next) => {
 // Build the list of accepted payment options (escrow + channel)
 function buildAcceptsList(path) {
   const baseExtra = {
-    facilitatorUrl: `http://localhost:${config.facilitatorPort}`,
+    facilitatorUrl: `${config.facilitatorUrl}`,
     facilitatorAddress: config.facilitatorAddress,
     deadlineSeconds: config.escrowDeadlineSeconds,
   };
@@ -101,7 +101,7 @@ app.get('/weather', x402Middleware, async (req, res) => {
 
   // Step 1: Verify with facilitator
   const allRequirements = buildPaymentRequirements(req.path);
-  const verifyResp = await fetch(`http://localhost:${config.facilitatorPort}/x402/verify`, {
+  const verifyResp = await fetch(`${config.facilitatorUrl}/x402/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paymentPayload: payment, paymentRequirements: allRequirements }),
@@ -125,7 +125,7 @@ app.get('/weather', x402Middleware, async (req, res) => {
     settleBody.sellerAddress = config.sellerAddress;
   }
 
-  const settleResp = await fetch(`http://localhost:${config.facilitatorPort}/x402/settle`, {
+  const settleResp = await fetch(`${config.facilitatorUrl}/x402/settle`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settleBody),
