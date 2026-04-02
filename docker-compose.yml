@@ -27,7 +27,9 @@ services:
       FACILITATOR_WALLET_ID: facilitator
       FACILITATOR_ADDRESS: ${FACILITATOR_ADDRESS:-}
       SELLER_ADDRESS: ${SELLER_ADDRESS:-}
-    command: ["node", "facilitator.js"]
+      FACILITATOR_SEED: ${FACILITATOR_SEED:-}
+      SELLER_SEED: ${SELLER_SEED:-}
+    command: ["sh", "init-wallets.sh", "node", "facilitator.js"]
     ports:
       - "8402:8402"
     healthcheck:
