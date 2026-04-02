@@ -28,6 +28,9 @@ module.exports = {
 
   // Service URLs and ports
   facilitatorUrl: env.FACILITATOR_URL || `http://localhost:${env.FACILITATOR_PORT || '8402'}`,
+  facilitatorPublicUrl: env.FACILITATOR_PUBLIC_URL || env.FACILITATOR_URL || `http://localhost:${env.FACILITATOR_PORT || '8402'}`,
+  resourceServerPublicUrl: env.RESOURCE_SERVER_PUBLIC_URL || `http://localhost:${env.RESOURCE_SERVER_PORT || '3000'}`,
+  network: env.HATHOR_NETWORK || 'privatenet',
   facilitatorPort: parseInt(env.FACILITATOR_PORT || '8402'),
   resourceServerPort: parseInt(env.RESOURCE_SERVER_PORT || '3000'),
 

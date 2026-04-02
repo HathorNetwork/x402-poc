@@ -54,7 +54,7 @@ export function X402Fetch() {
   const { sendNanoContractTx, address, refreshBalance } = useWallet();
   const { network, isConnected, addEscrow } = useHathor();
 
-  const [url, setUrl] = useState('http://localhost:3001/weather');
+  const [url, setUrl] = useState('https://api.x402.hathor.dev/weather');
   const [step, setStep] = useState<Step>('idle');
   const [paymentOptions, setPaymentOptions] = useState<PaymentOption[]>([]);
   const [selectedOption, setSelectedOption] = useState<PaymentOption | null>(null);

@@ -23,7 +23,7 @@ app.use((req, res, next) => {
 // Build the list of accepted payment options (escrow + channel)
 function buildAcceptsList(path) {
   const baseExtra = {
-    facilitatorUrl: `${config.facilitatorUrl}`,
+    facilitatorUrl: config.facilitatorPublicUrl,
     facilitatorAddress: config.facilitatorAddress,
     deadlineSeconds: config.escrowDeadlineSeconds,
   };
@@ -33,8 +33,8 @@ function buildAcceptsList(path) {
   // Escrow option
   accepts.push({
     scheme: 'hathor-escrow',
-    network: 'hathor:privatenet',
-    resource: `http://localhost:${config.resourceServerPort}${path}`,
+    network: 'hathor:${config.network}',
+    resource: `${config.resourceServerPublicUrl}${path}`,
     mimeType: 'application/json',
     payTo: config.sellerAddress,
     maxTimeoutSeconds: config.escrowDeadlineSeconds,
@@ -48,8 +48,8 @@ function buildAcceptsList(path) {
   if (config.channelBlueprintId) {
     accepts.push({
       scheme: 'hathor-channel',
-      network: 'hathor:privatenet',
-      resource: `http://localhost:${config.resourceServerPort}${path}`,
+      network: 'hathor:${config.network}',
+      resource: `${config.resourceServerPublicUrl}${path}`,
       mimeType: 'application/json',
       payTo: config.sellerAddress,
       maxTimeoutSeconds: config.escrowDeadlineSeconds,
@@ -155,7 +155,7 @@ app.get('/weather', x402Middleware, async (req, res) => {
     payment: {
       success: true,
       scheme,
-      network: 'hathor:privatenet',
+      network: 'hathor:${config.network}',
       id,
       settleTxId: settlement.txId,
     },

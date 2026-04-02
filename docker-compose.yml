@@ -51,6 +51,9 @@ services:
       SELLER_ADDRESS: ${SELLER_ADDRESS:-}
       RESOURCE_SERVER_PORT: "3001"
       FACILITATOR_URL: http://facilitator:8402
+      FACILITATOR_PUBLIC_URL: https://facilitator.x402.hathor.dev
+      RESOURCE_SERVER_PUBLIC_URL: https://api.x402.hathor.dev
+      HATHOR_NETWORK: testnet
     command: ["node", "resource-server.js"]
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/weather',r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))"]
