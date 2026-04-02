@@ -8,8 +8,9 @@ module.exports = {
   fullnodeUrl: env.FULLNODE_URL || 'http://127.0.0.1:8080',
   walletHeadlessUrl: env.WALLET_HEADLESS_URL || 'http://localhost:8000',
 
-  // Blueprint published on-chain
+  // Blueprints published on-chain
   blueprintId: env.BLUEPRINT_ID || '',
+  channelBlueprintId: env.CHANNEL_BLUEPRINT_ID || '',
 
   // Wallet IDs (must be pre-created in wallet-headless)
   buyerWalletId: env.BUYER_WALLET_ID || 'buyer',

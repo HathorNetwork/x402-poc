@@ -1,7 +1,7 @@
 // x402 Resource Server (Seller)
 // A simple API server that sells weather data
-// Accepts payment in HTR or a custom token (e.g. hUSDC)
-// Uses x402 middleware to gate access
+// Accepts payment via escrow (hathor-escrow) or channel (hathor-channel)
+// Supports HTR and custom tokens
 
 const express = require('express');
 const fetch = require('node-fetch');
@@ -20,34 +20,43 @@ app.use((req, res, next) => {
   next();
 });
 
-// Build the list of accepted payment options
+// Build the list of accepted payment options (escrow + channel)
 function buildAcceptsList(path) {
-  const base = {
+  const baseExtra = {
+    facilitatorUrl: `http://localhost:${config.facilitatorPort}`,
+    facilitatorAddress: config.facilitatorAddress,
+    deadlineSeconds: config.escrowDeadlineSeconds,
+  };
+
+  const accepts = [];
+
+  // Escrow options
+  accepts.push({
     scheme: 'hathor-escrow',
     network: 'hathor:privatenet',
     resource: `http://localhost:${config.resourceServerPort}${path}`,
     mimeType: 'application/json',
     payTo: config.sellerAddress,
     maxTimeoutSeconds: config.escrowDeadlineSeconds,
-    extra: {
-      facilitatorUrl: `http://localhost:${config.facilitatorPort}`,
-      facilitatorAddress: config.facilitatorAddress,
-      blueprintId: config.blueprintId,
-      deadlineSeconds: config.escrowDeadlineSeconds,
-    },
-  };
+    asset: config.htrTokenUid,
+    amount: String(config.htrPaymentAmount),
+    description: `Pay ${(config.htrPaymentAmount / 100).toFixed(2)} HTR (single escrow)`,
+    extra: { ...baseExtra, blueprintId: config.blueprintId },
+  });
 
-  const accepts = [
-    { ...base, asset: config.htrTokenUid, amount: String(config.htrPaymentAmount), description: 'Pay 1.00 HTR' },
-  ];
-
-  // If a custom token is configured, offer it as an alternative
-  if (config.customTokenUid) {
+  // Channel options
+  if (config.channelBlueprintId) {
     accepts.push({
-      ...base,
-      asset: config.customTokenUid,
-      amount: String(config.customTokenPaymentAmount),
-      description: 'Or pay 10.00 hUSDC',
+      scheme: 'hathor-channel',
+      network: 'hathor:privatenet',
+      resource: `http://localhost:${config.resourceServerPort}${path}`,
+      mimeType: 'application/json',
+      payTo: config.sellerAddress,
+      maxTimeoutSeconds: config.escrowDeadlineSeconds,
+      asset: config.htrTokenUid,
+      amount: String(config.htrPaymentAmount),
+      description: `Pay ${(config.htrPaymentAmount / 100).toFixed(2)} HTR via channel (instant if pre-funded)`,
+      extra: { ...baseExtra, channelBlueprintId: config.channelBlueprintId },
     });
   }
 
@@ -66,14 +75,12 @@ function x402Middleware(req, res, next) {
     });
   }
 
-  // Payment present — verify it
   const payment = JSON.parse(paymentHeader);
   req.x402Payment = payment;
   next();
 }
 
-// Find which accepted option the client paid with by querying the facilitator.
-// The server sends ALL accepted options and the facilitator checks which one matches.
+// Build payment requirements from the accepts list
 function buildPaymentRequirements(path) {
   return buildAcceptsList(path).map(opt => ({
     scheme: opt.scheme,
@@ -87,22 +94,18 @@ function buildPaymentRequirements(path) {
 // Verify payment with facilitator, serve resource, then settle
 app.get('/weather', x402Middleware, async (req, res) => {
   const payment = req.x402Payment;
-  const { ncId } = payment.payload;
+  const scheme = payment.scheme;
+  const isChannel = scheme === 'hathor-channel';
+  const id = isChannel ? payment.payload.channelId : payment.payload.ncId;
 
-  log('RESOURCE-SERVER', `Verifying payment ncId=${ncId}`);
-
-  // Build all accepted payment requirements — the facilitator will match
-  // the on-chain escrow state against each one to find a valid match
-  const allRequirements = buildPaymentRequirements(req.path);
+  log('RESOURCE-SERVER', `Verifying ${scheme} payment id=${id}`);
 
   // Step 1: Verify with facilitator
+  const allRequirements = buildPaymentRequirements(req.path);
   const verifyResp = await fetch(`http://localhost:${config.facilitatorPort}/x402/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      paymentPayload: payment,
-      paymentRequirements: allRequirements,
-    }),
+    body: JSON.stringify({ paymentPayload: payment, paymentRequirements: allRequirements }),
   });
   const verification = await verifyResp.json();
 
@@ -124,14 +127,20 @@ app.get('/weather', x402Middleware, async (req, res) => {
     timestamp: new Date().toISOString(),
   };
 
-  // Step 3: Settle with facilitator (async — don't block response)
-  log('RESOURCE-SERVER', `Requesting settlement for ncId=${ncId}`);
+  // Step 3: Settle with facilitator (async)
+  log('RESOURCE-SERVER', `Requesting settlement for ${scheme} id=${id}`);
+  const settleBody = { paymentPayload: payment };
+
+  // Channel settle needs amount and seller
+  if (isChannel) {
+    settleBody.amount = config.htrPaymentAmount;
+    settleBody.sellerAddress = config.sellerAddress;
+  }
+
   fetch(`http://localhost:${config.facilitatorPort}/x402/settle`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      paymentPayload: payment,
-    }),
+    body: JSON.stringify(settleBody),
   })
     .then(r => r.json())
     .then(result => {
@@ -143,14 +152,14 @@ app.get('/weather', x402Middleware, async (req, res) => {
     })
     .catch(err => log('RESOURCE-SERVER', `Settlement error: ${err.message}`));
 
-  // Return the resource immediately after verification
+  // Return the resource
   res.json({
     data: weatherData,
     payment: {
       success: true,
-      scheme: 'hathor-escrow',
+      scheme,
       network: 'hathor:privatenet',
-      ncId,
+      id,
     },
   });
 });
@@ -158,5 +167,5 @@ app.get('/weather', x402Middleware, async (req, res) => {
 app.listen(config.resourceServerPort, () => {
   log('RESOURCE-SERVER', `Weather API running on port ${config.resourceServerPort}`);
   log('RESOURCE-SERVER', `Seller address: ${config.sellerAddress}`);
-  log('RESOURCE-SERVER', `Accepts: HTR (${config.htrPaymentAmount} cents)${config.customTokenUid ? `, hUSDC (${config.customTokenPaymentAmount} cents)` : ''}`);
+  log('RESOURCE-SERVER', `Accepts: escrow${config.channelBlueprintId ? ' + channel' : ''}`);
 });

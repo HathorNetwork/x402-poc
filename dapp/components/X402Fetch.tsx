@@ -5,7 +5,6 @@ import { useWallet } from '@/contexts/WalletContext';
 import { useHathor } from '@/contexts/HathorContext';
 import { config } from '@/lib/config';
 import { toast } from '@/lib/toast';
-import { EscrowStatusBadge } from './EscrowStatusBadge';
 import { formatAddress } from '@/lib/utils';
 
 interface PaymentOption {
@@ -16,11 +15,11 @@ interface PaymentOption {
   description: string;
   resource: string;
   payTo: string;
-  maxTimeoutSeconds: number;
   extra: {
     facilitatorUrl: string;
     facilitatorAddress: string;
-    blueprintId: string;
+    blueprintId?: string;
+    channelBlueprintId?: string;
     deadlineSeconds: number;
   };
 }
@@ -28,15 +27,28 @@ interface PaymentOption {
 interface PaymentHistory {
   id: string;
   url: string;
-  ncId: string;
+  scheme: string;
+  contractId: string;
   amount: string;
-  asset: string;
   timestamp: Date;
-  resourceData: any;
-  status: 'paid' | 'failed';
 }
 
-type Step = 'idle' | 'fetching' | 'got402' | 'creating_escrow' | 'waiting_confirmation' | 'retrying' | 'done' | 'error';
+type Step = 'idle' | 'fetching' | 'got402' | 'creating' | 'waiting_confirmation' | 'retrying' | 'done' | 'error';
+
+const CHANNEL_STORAGE_KEY = 'x402_active_channel';
+
+function getStoredChannel(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(CHANNEL_STORAGE_KEY);
+}
+
+function storeChannel(channelId: string) {
+  localStorage.setItem(CHANNEL_STORAGE_KEY, channelId);
+}
+
+function clearStoredChannel() {
+  localStorage.removeItem(CHANNEL_STORAGE_KEY);
+}
 
 export function X402Fetch() {
   const { sendNanoContractTx, address, refreshBalance } = useWallet();
@@ -48,8 +60,9 @@ export function X402Fetch() {
   const [selectedOption, setSelectedOption] = useState<PaymentOption | null>(null);
   const [resourceData, setResourceData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
-  const [ncId, setNcId] = useState<string | null>(null);
+  const [contractId, setContractId] = useState<string | null>(null);
   const [history, setHistory] = useState<PaymentHistory[]>([]);
+  const [activeChannel, setActiveChannel] = useState<string | null>(getStoredChannel());
 
   const reset = () => {
     setStep('idle');
@@ -57,128 +70,144 @@ export function X402Fetch() {
     setSelectedOption(null);
     setResourceData(null);
     setError(null);
-    setNcId(null);
+    setContractId(null);
   };
 
-  // Step 1: Fetch the URL, expect 402
+  const addToHistory = (scheme: string, id: string, amount: string) => {
+    setHistory(prev => [{ id: Date.now().toString(), url, scheme, contractId: id, amount, timestamp: new Date() }, ...prev]);
+  };
+
+  // Try to pay with an existing channel (instant — no wallet interaction)
+  const payWithChannel = async (channelId: string): Promise<boolean> => {
+    const paymentPayload = {
+      scheme: 'hathor-channel',
+      network: `hathor:${network}`,
+      payload: { channelId, buyerAddress: address },
+    };
+
+    const resp = await fetch(url, { mode: 'cors', headers: { 'X-Payment': JSON.stringify(paymentPayload) } });
+    if (!resp.ok) return false;
+
+    const data = await resp.json();
+    setResourceData(data);
+    setContractId(channelId);
+    setStep('done');
+    addToHistory('hathor-channel', channelId, '100');
+    refreshBalance('00', network);
+    return true;
+  };
+
+  // Step 1: Fetch the URL
   const handleFetch = async () => {
     reset();
+
+    // If we have an active channel, try instant payment first
+    if (activeChannel) {
+      setStep('retrying');
+      const ok = await payWithChannel(activeChannel).catch(() => false);
+      if (ok) {
+        toast.success('Paid via channel (instant!)');
+        return;
+      }
+      // Channel failed — clear it and fall through to normal 402 flow
+      clearStoredChannel();
+      setActiveChannel(null);
+      toast.info('Channel exhausted. Fetching payment options...');
+    }
+
     setStep('fetching');
 
     try {
       const resp = await fetch(url, { mode: 'cors' });
 
       if (resp.ok) {
-        const data = await resp.json();
-        setResourceData(data);
+        setResourceData(await resp.json());
         setStep('done');
-        toast.success('Resource is free — no payment needed!');
+        toast.success('Resource is free!');
         return;
       }
 
-      if (resp.status !== 402) {
-        throw new Error(`Unexpected status: ${resp.status}`);
-      }
+      if (resp.status !== 402) throw new Error(`Unexpected status: ${resp.status}`);
 
       const body = await resp.json();
-      if (!body.accepts || body.accepts.length === 0) {
-        throw new Error('402 response has no payment options');
-      }
+      if (!body.accepts?.length) throw new Error('No payment options in 402');
 
       setPaymentOptions(body.accepts);
       setSelectedOption(body.accepts[0]);
       setStep('got402');
     } catch (err: any) {
-      console.error('X402 fetch error:', err);
       setError(err.message || 'Failed to fetch');
       setStep('error');
     }
   };
 
-  // Step 2: Create escrow and pay
+  // Step 2: Pay (escrow or channel)
   const handlePay = async () => {
     if (!selectedOption || !isConnected || !address) return;
-
     const opt = selectedOption;
-    setStep('creating_escrow');
+    const isChannel = opt.scheme === 'hathor-channel';
 
     try {
-      const deadline = Math.floor(Date.now() / 1000) + opt.extra.deadlineSeconds;
-      const amount = parseInt(opt.amount);
+      setStep('creating');
+      let id: string;
 
-      toast.info('Confirm the escrow deposit in your wallet...');
+      if (isChannel) {
+        // Create a new channel with 10x the per-request amount
+        const deadline = Math.floor(Date.now() / 1000) + 3600;
+        const deposit = parseInt(opt.amount) * 10;
+        toast.info('Confirm the channel deposit in your wallet...');
 
-      const result = await sendNanoContractTx({
-        network,
-        blueprint_id: opt.extra.blueprintId,
-        method: 'initialize',
-        args: [
-          opt.payTo,
-          opt.extra.facilitatorAddress,
-          opt.asset,
-          deadline,
-          opt.resource,
-          'dapp-x402-fetch',
-        ],
-        actions: [{
-          type: 'deposit',
-          amount: String(amount),
-          token: opt.asset,
-        }],
-        push_tx: true,
-      });
+        const result = await sendNanoContractTx({
+          network, blueprint_id: opt.extra.channelBlueprintId, method: 'initialize',
+          args: [opt.extra.facilitatorAddress, opt.asset, deadline],
+          actions: [{ type: 'deposit', amount: String(deposit), token: opt.asset }],
+          push_tx: true,
+        });
+        id = result?.response?.hash || result?.hash || result?.response?.response?.hash;
+        if (!id) throw new Error('No tx hash');
+        storeChannel(id);
+        setActiveChannel(id);
+        toast.success(`Channel created: ${id.slice(0, 12)}...`);
+      } else {
+        // Create a one-shot escrow
+        const deadline = Math.floor(Date.now() / 1000) + opt.extra.deadlineSeconds;
+        toast.info('Confirm the escrow deposit in your wallet...');
 
-      const escrowId = result?.response?.hash || result?.hash || result?.response?.response?.hash;
-      if (!escrowId) {
-        throw new Error('No transaction hash in response');
+        const result = await sendNanoContractTx({
+          network, blueprint_id: opt.extra.blueprintId, method: 'initialize',
+          args: [opt.payTo, opt.extra.facilitatorAddress, opt.asset, deadline, opt.resource, 'dapp-x402'],
+          actions: [{ type: 'deposit', amount: opt.amount, token: opt.asset }],
+          push_tx: true,
+        });
+        id = result?.response?.hash || result?.hash || result?.response?.response?.hash;
+        if (!id) throw new Error('No tx hash');
+        await addEscrow(id);
+        toast.success(`Escrow created: ${id.slice(0, 12)}...`);
       }
 
-      setNcId(escrowId);
-      await addEscrow(escrowId);
-      toast.success(`Escrow created: ${escrowId.slice(0, 12)}...`);
+      setContractId(id);
 
-      // Step 3: Wait for confirmation
+      // Wait for confirmation
       setStep('waiting_confirmation');
-      await waitForConfirmation(escrowId);
+      await waitForConfirmation(id);
 
-      // Step 4: Retry with payment proof
+      // Retry with payment proof
       setStep('retrying');
-      const paymentPayload = {
-        scheme: 'hathor-escrow',
-        network: `hathor:${network}`,
-        payload: {
-          ncId: escrowId,
-          depositTxId: escrowId,
-          buyerAddress: address,
-        },
-      };
+      const paymentPayload = isChannel
+        ? { scheme: 'hathor-channel', network: `hathor:${network}`, payload: { channelId: id, buyerAddress: address } }
+        : { scheme: 'hathor-escrow', network: `hathor:${network}`, payload: { ncId: id, depositTxId: id, buyerAddress: address } };
 
-      const paidResp = await fetch(url, {
-        headers: { 'X-Payment': JSON.stringify(paymentPayload) },
-      });
-
-      if (paidResp.status !== 200) {
+      const paidResp = await fetch(url, { mode: 'cors', headers: { 'X-Payment': JSON.stringify(paymentPayload) } });
+      if (!paidResp.ok) {
         const errBody = await paidResp.json().catch(() => ({}));
-        throw new Error(errBody.reason || errBody.error || `Payment rejected: ${paidResp.status}`);
+        throw new Error(errBody.reason || errBody.error || `Rejected: ${paidResp.status}`);
       }
 
       const data = await paidResp.json();
       setResourceData(data);
       setStep('done');
       toast.success('Resource received!');
-
-      // Add to history
-      setHistory(prev => [{
-        id: escrowId,
-        url,
-        ncId: escrowId,
-        amount: opt.amount,
-        asset: opt.asset,
-        timestamp: new Date(),
-        resourceData: data,
-        status: 'paid',
-      }, ...prev]);
-
+      addToHistory(opt.scheme, id, opt.amount);
       refreshBalance('00', network);
     } catch (err: any) {
       setError(err.message);
@@ -197,28 +226,43 @@ export function X402Fetch() {
       } catch { /* retry */ }
       await new Promise(r => setTimeout(r, 1000));
     }
-    throw new Error('Transaction confirmation timeout (60s)');
+    throw new Error('Confirmation timeout (60s)');
   };
 
-  const amountDisplay = selectedOption
-    ? `${(parseInt(selectedOption.amount) / 100).toFixed(2)} ${selectedOption.asset === '00' ? 'HTR' : 'tokens'}`
-    : '';
+  const amountDisplay = selectedOption ? `${(parseInt(selectedOption.amount) / 100).toFixed(2)} HTR` : '';
+  const isChannel = selectedOption?.scheme === 'hathor-channel';
 
   return (
     <div className="space-y-6">
+      {/* Active Channel Banner */}
+      {activeChannel && (
+        <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <span className="text-green-400 font-medium">Active Payment Channel</span>
+            <p className="text-xs text-slate-400 font-mono mt-1">{formatAddress(activeChannel)}</p>
+            <p className="text-xs text-slate-500">Requests will be paid instantly — no wallet confirmation needed</p>
+          </div>
+          <button
+            onClick={() => { clearStoredChannel(); setActiveChannel(null); toast.info('Channel disconnected'); }}
+            className="text-xs text-slate-400 hover:text-red-400 transition-colors px-3 py-1 border border-slate-600 rounded"
+          >
+            Disconnect
+          </button>
+        </div>
+      )}
+
       {/* URL Input */}
       <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
         <h3 className="text-lg font-bold text-white mb-2">Access a Paid Resource</h3>
         <p className="text-sm text-slate-400 mb-4">
-          Enter the URL of an x402-enabled API. The dApp will handle the payment flow automatically.
+          {activeChannel
+            ? 'Your channel will pay instantly — no wallet popup.'
+            : 'Enter an x402-enabled URL. Choose escrow (per-request) or channel (pre-funded).'}
         </p>
 
         <div className="flex gap-3">
           <input
-            type="text"
-            value={url}
-            onChange={e => setUrl(e.target.value)}
-            placeholder="https://api.example.com/data"
+            type="text" value={url} onChange={e => setUrl(e.target.value)}
             className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white font-mono text-sm"
             disabled={step !== 'idle' && step !== 'error' && step !== 'done'}
           />
@@ -226,196 +270,150 @@ export function X402Fetch() {
             onClick={step === 'idle' || step === 'error' || step === 'done' ? handleFetch : undefined}
             disabled={!url || (step !== 'idle' && step !== 'error' && step !== 'done')}
             className="px-6 py-3 rounded-lg font-medium transition-colors disabled:opacity-50 whitespace-nowrap"
-            style={{
-              background: 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)',
-              color: '#0f172a'
-            }}
+            style={{ background: 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)', color: '#0f172a' }}
           >
             Fetch
           </button>
         </div>
       </div>
 
-      {/* Step: Fetching */}
+      {/* Fetching */}
       {step === 'fetching' && (
         <div className="bg-slate-800 rounded-xl border border-slate-700 p-6 text-center">
-          <div className="text-amber-400 text-lg mb-2">Fetching resource...</div>
-          <p className="text-slate-400 text-sm">Requesting {url}</p>
+          <div className="text-amber-400 text-lg">Fetching resource...</div>
         </div>
       )}
 
-      {/* Step: Got 402 — show payment options */}
+      {/* Got 402 — payment options */}
       {step === 'got402' && selectedOption && (
         <div className="bg-slate-800 rounded-xl border border-amber-500/50 p-6">
           <div className="flex items-center gap-3 mb-4">
             <span className="text-3xl">💰</span>
             <div>
               <h3 className="text-lg font-bold text-amber-400">402 — Payment Required</h3>
-              <p className="text-sm text-slate-400">This resource requires payment to access</p>
+              <p className="text-sm text-slate-400">Choose how to pay</p>
             </div>
           </div>
 
-          <div className="bg-slate-900 rounded-lg p-4 space-y-3 mb-4">
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-400">Resource</span>
-              <span className="text-white font-mono text-xs">{selectedOption.resource}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-400">Amount</span>
+          {/* Option selector */}
+          <div className="flex gap-2 mb-4">
+            {paymentOptions.map((opt, i) => {
+              const isCh = opt.scheme === 'hathor-channel';
+              return (
+                <button key={i} onClick={() => setSelectedOption(opt)}
+                  className={`flex-1 px-3 py-3 rounded-lg text-sm border transition-colors text-left ${
+                    selectedOption === opt ? 'border-amber-500 bg-amber-500/20 text-amber-400' : 'border-slate-600 bg-slate-700 text-slate-300 hover:border-slate-500'
+                  }`}>
+                  <div className="font-medium">{isCh ? '⚡ Channel' : '🔒 Escrow'}</div>
+                  <div className="text-xs mt-1 opacity-70">{isCh ? 'Instant after setup' : 'One-shot per request'}</div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Details */}
+          <div className="bg-slate-900 rounded-lg p-4 space-y-2 mb-4 text-sm">
+            <div className="flex justify-between">
+              <span className="text-slate-400">Per request</span>
               <span className="text-white font-bold">{amountDisplay}</span>
             </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-400">Pay to (seller)</span>
-              <span className="text-white font-mono text-xs">{formatAddress(selectedOption.payTo)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-400">Facilitator</span>
-              <span className="text-white font-mono text-xs">{formatAddress(selectedOption.extra.facilitatorAddress)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-400">Deadline</span>
-              <span className="text-white">{selectedOption.extra.deadlineSeconds}s</span>
-            </div>
-            {selectedOption.description && (
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-400">Description</span>
-                <span className="text-white">{selectedOption.description}</span>
+            {isChannel && (
+              <div className="flex justify-between">
+                <span className="text-slate-400">Channel deposit (10 requests)</span>
+                <span className="text-white font-bold">{(parseInt(selectedOption.amount) * 10 / 100).toFixed(2)} HTR</span>
               </div>
             )}
+            <div className="flex justify-between">
+              <span className="text-slate-400">Seller</span>
+              <span className="text-white font-mono text-xs">{formatAddress(selectedOption.payTo)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">After this</span>
+              <span className={isChannel ? 'text-green-400' : 'text-slate-400'}>
+                {isChannel ? 'Next 9 requests are instant' : 'Each request needs a new escrow'}
+              </span>
+            </div>
           </div>
 
-          {paymentOptions.length > 1 && (
-            <div className="mb-4">
-              <label className="text-sm text-slate-400 mb-2 block">Payment option:</label>
-              <div className="flex gap-2">
-                {paymentOptions.map((opt, i) => (
-                  <button
-                    key={i}
-                    onClick={() => setSelectedOption(opt)}
-                    className={`px-3 py-2 rounded-lg text-sm border transition-colors ${
-                      selectedOption === opt
-                        ? 'border-amber-500 bg-amber-500/20 text-amber-400'
-                        : 'border-slate-600 bg-slate-700 text-slate-300 hover:border-slate-500'
-                    }`}
-                  >
-                    {opt.description || `${(parseInt(opt.amount) / 100).toFixed(2)} ${opt.asset === '00' ? 'HTR' : opt.asset.slice(0, 6)}`}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
           <div className="flex gap-3">
-            <button
-              onClick={handlePay}
-              disabled={!isConnected}
+            <button onClick={handlePay} disabled={!isConnected}
               className="flex-1 px-6 py-3 rounded-lg font-medium transition-colors disabled:opacity-50"
-              style={{
-                background: isConnected
-                  ? 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)'
-                  : '#475569',
-                color: '#0f172a'
-              }}
-            >
-              {isConnected ? `Pay ${amountDisplay} & Access` : 'Connect Wallet First'}
+              style={{ background: isConnected ? 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)' : '#475569', color: '#0f172a' }}>
+              {!isConnected ? 'Connect Wallet First'
+                : isChannel ? `Open Channel (${(parseInt(selectedOption.amount) * 10 / 100).toFixed(2)} HTR)`
+                : `Pay ${amountDisplay}`}
             </button>
-            <button
-              onClick={reset}
-              className="px-4 py-3 rounded-lg text-slate-400 hover:text-white border border-slate-600 transition-colors"
-            >
-              Cancel
-            </button>
+            <button onClick={reset} className="px-4 py-3 rounded-lg text-slate-400 hover:text-white border border-slate-600 transition-colors">Cancel</button>
           </div>
         </div>
       )}
 
-      {/* Step: Creating escrow */}
-      {step === 'creating_escrow' && (
+      {/* Creating */}
+      {step === 'creating' && (
         <div className="bg-slate-800 rounded-xl border border-blue-500/50 p-6 text-center">
-          <div className="text-blue-400 text-lg mb-2">Creating escrow...</div>
+          <div className="text-blue-400 text-lg mb-2">{isChannel ? 'Creating channel...' : 'Creating escrow...'}</div>
           <p className="text-slate-400 text-sm">Confirm the deposit in your wallet</p>
         </div>
       )}
 
-      {/* Step: Waiting confirmation */}
+      {/* Waiting confirmation */}
       {step === 'waiting_confirmation' && (
         <div className="bg-slate-800 rounded-xl border border-blue-500/50 p-6 text-center">
           <div className="text-blue-400 text-lg mb-2">Waiting for on-chain confirmation...</div>
-          <p className="text-slate-400 text-sm">
-            Escrow ID: <span className="font-mono">{ncId?.slice(0, 16)}...</span>
-          </p>
-          <p className="text-xs text-slate-500 mt-2">This usually takes 8-16 seconds</p>
+          <p className="text-slate-400 text-sm font-mono">{contractId?.slice(0, 20)}...</p>
+          <p className="text-xs text-slate-500 mt-2">~8-16 seconds</p>
         </div>
       )}
 
-      {/* Step: Retrying */}
+      {/* Retrying */}
       {step === 'retrying' && (
-        <div className="bg-slate-800 rounded-xl border border-blue-500/50 p-6 text-center">
-          <div className="text-blue-400 text-lg mb-2">Payment verified! Fetching resource...</div>
-          <p className="text-slate-400 text-sm">Retrying request with payment proof</p>
+        <div className="bg-slate-800 rounded-xl border border-green-500/50 p-6 text-center">
+          <div className="text-green-400 text-lg mb-2">Payment verified! Fetching resource...</div>
         </div>
       )}
 
-      {/* Step: Done — show resource */}
+      {/* Done */}
       {step === 'done' && resourceData && (
         <div className="bg-slate-800 rounded-xl border border-green-500/50 p-6">
           <div className="flex items-center gap-3 mb-4">
             <span className="text-3xl">✅</span>
             <div>
               <h3 className="text-lg font-bold text-green-400">Resource Received</h3>
-              {ncId && <p className="text-sm text-slate-400">Paid via escrow {formatAddress(ncId)}</p>}
+              {contractId && <p className="text-sm text-slate-400">Via {formatAddress(contractId)}</p>}
             </div>
           </div>
-
           <pre className="bg-slate-900 rounded-lg p-4 text-sm text-slate-300 overflow-x-auto">
             {JSON.stringify(resourceData.data || resourceData, null, 2)}
           </pre>
-
-          <button
-            onClick={reset}
-            className="mt-4 px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white border border-slate-600 transition-colors"
-          >
-            Make another request
+          <button onClick={reset} className="mt-4 px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white border border-slate-600 transition-colors">
+            {activeChannel ? 'Fetch again (instant)' : 'Make another request'}
           </button>
         </div>
       )}
 
-      {/* Step: Error */}
+      {/* Error */}
       {step === 'error' && (
         <div className="bg-slate-800 rounded-xl border border-red-500/50 p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <span className="text-3xl">❌</span>
-            <h3 className="text-lg font-bold text-red-400">Error</h3>
-          </div>
+          <h3 className="text-lg font-bold text-red-400 mb-2">Error</h3>
           <p className="text-slate-300 text-sm mb-4">{error}</p>
-          <button
-            onClick={reset}
-            className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white border border-slate-600 transition-colors"
-          >
-            Try again
-          </button>
+          <button onClick={reset} className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white border border-slate-600 transition-colors">Try again</button>
         </div>
       )}
 
-      {/* Payment History */}
+      {/* History */}
       {history.length > 0 && (
         <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
           <h3 className="text-lg font-bold text-white mb-4">Payment History</h3>
-          <div className="space-y-3">
-            {history.map((entry) => (
-              <div key={entry.id} className="flex items-center justify-between bg-slate-900 rounded-lg p-3">
+          <div className="space-y-2">
+            {history.map((e) => (
+              <div key={e.id} className="flex items-center justify-between bg-slate-900 rounded-lg p-3">
                 <div>
-                  <p className="text-white text-sm font-mono">{entry.url}</p>
-                  <p className="text-xs text-slate-500">
-                    {entry.timestamp.toLocaleTimeString()} — Escrow: {formatAddress(entry.ncId)}
-                  </p>
+                  <p className="text-white text-sm font-mono">{e.url}</p>
+                  <p className="text-xs text-slate-500">{e.timestamp.toLocaleTimeString()} — {formatAddress(e.contractId)}</p>
                 </div>
-                <div className="text-right">
-                  <p className="text-white font-bold text-sm">
-                    {(parseInt(entry.amount) / 100).toFixed(2)} {entry.asset === '00' ? 'HTR' : 'tokens'}
-                  </p>
-                  <EscrowStatusBadge phase="RELEASED" />
-                </div>
+                <span className={`text-xs px-2 py-1 rounded ${e.scheme === 'hathor-channel' ? 'bg-green-500/20 text-green-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                  {e.scheme === 'hathor-channel' ? 'channel' : 'escrow'}
+                </span>
               </div>
             ))}
           </div>

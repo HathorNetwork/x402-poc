@@ -9,8 +9,9 @@ export const config = {
     'mainnet': process.env.NEXT_PUBLIC_HATHOR_NODE_URL_MAINNET || 'https://node1.mainnet.hathor.network/v1a',
   },
 
-  // x402 Escrow config
+  // x402 config
   blueprintId: process.env.NEXT_PUBLIC_BLUEPRINT_ID || '',
+  channelBlueprintId: process.env.NEXT_PUBLIC_CHANNEL_BLUEPRINT_ID || '',
   facilitatorAddress: process.env.NEXT_PUBLIC_FACILITATOR_ADDRESS || '',
   sellerAddress: process.env.NEXT_PUBLIC_SELLER_ADDRESS || '',
   escrowDeadlineSeconds: parseInt(process.env.NEXT_PUBLIC_ESCROW_DEADLINE_SECONDS || '300'),
