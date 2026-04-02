@@ -9,8 +9,30 @@ const { walletRequest, getNanoContractState, waitForTxConfirmation, log } = requ
 const app = express();
 app.use(express.json());
 
+// Validate escrow state against a single payment requirement
+function validateAgainstRequirement(fields, req) {
+  const errors = [];
+  if (fields.phase.value !== 'LOCKED') {
+    errors.push(`phase is ${fields.phase.value}, expected LOCKED`);
+  }
+  if (fields.amount.value < parseInt(req.maxAmountRequired)) {
+    errors.push(`amount ${fields.amount.value} < required ${req.maxAmountRequired}`);
+  }
+  if (fields.seller.value !== req.payTo) {
+    errors.push(`seller ${fields.seller.value} != payTo ${req.payTo}`);
+  }
+  if (fields.facilitator.value !== config.facilitatorAddress) {
+    errors.push(`facilitator ${fields.facilitator.value} != expected ${config.facilitatorAddress}`);
+  }
+  if (req.asset && fields.token_uid.value !== req.asset) {
+    errors.push(`token_uid ${fields.token_uid.value} != asset ${req.asset}`);
+  }
+  return errors;
+}
+
 // POST /x402/verify
 // Resource server calls this to verify an escrow is valid
+// paymentRequirements can be a single object or an array (multi-token)
 app.post('/x402/verify', async (req, res) => {
   const { paymentPayload, paymentRequirements } = req.body;
   const { ncId } = paymentPayload.payload;
@@ -23,28 +45,25 @@ app.post('/x402/verify', async (req, res) => {
   }
 
   const fields = stateResp.fields;
-  const errors = [];
 
-  if (fields.phase.value !== 'LOCKED') {
-    errors.push(`phase is ${fields.phase.value}, expected LOCKED`);
-  }
-  if (fields.amount.value < parseInt(paymentRequirements.maxAmountRequired)) {
-    errors.push(`amount ${fields.amount.value} < required ${paymentRequirements.maxAmountRequired}`);
-  }
-  if (fields.seller.value !== paymentRequirements.payTo) {
-    errors.push(`seller ${fields.seller.value} != payTo ${paymentRequirements.payTo}`);
-  }
-  if (fields.facilitator.value !== config.facilitatorAddress) {
-    errors.push(`facilitator ${fields.facilitator.value} != expected ${config.facilitatorAddress}`);
-  }
+  // Support both single requirement and array of requirements
+  const requirements = Array.isArray(paymentRequirements)
+    ? paymentRequirements
+    : [paymentRequirements];
 
-  if (errors.length > 0) {
-    log('FACILITATOR', `Verification FAILED: ${errors.join('; ')}`);
-    return res.json({ valid: false, invalidReason: errors.join('; ') });
+  // Try each requirement — if any matches, the payment is valid
+  let lastErrors = [];
+  for (const requirement of requirements) {
+    const errors = validateAgainstRequirement(fields, requirement);
+    if (errors.length === 0) {
+      log('FACILITATOR', `Verification PASSED for ncId=${ncId} (asset: ${fields.token_uid.value})`);
+      return res.json({ valid: true });
+    }
+    lastErrors = errors;
   }
 
-  log('FACILITATOR', `Verification PASSED for ncId=${ncId}`);
-  res.json({ valid: true });
+  log('FACILITATOR', `Verification FAILED: ${lastErrors.join('; ')}`);
+  res.json({ valid: false, invalidReason: lastErrors.join('; ') });
 });
 
 // POST /x402/settle
@@ -70,7 +89,7 @@ app.post('/x402/settle', async (req, res) => {
   const tokenUid = fields.token_uid.value;
 
   // Execute release() on the nano contract via wallet-headless
-  log('FACILITATOR', `Calling release() — withdrawing ${amount} to seller ${seller}`);
+  log('FACILITATOR', `Calling release() — withdrawing ${amount} of token ${tokenUid} to seller ${seller}`);
   const result = await walletRequest('POST', '/wallet/nano-contracts/execute', {
     nc_id: ncId,
     method: 'release',

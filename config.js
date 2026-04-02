@@ -21,8 +21,9 @@ module.exports = {
   facilitatorAddress: env.FACILITATOR_ADDRESS || '',
   sellerAddress: env.SELLER_ADDRESS || '',
 
-  // HTR token UID
-  htrTokenUid: env.TOKEN_UID || '00',
+  // Token UIDs
+  htrTokenUid: '00',
+  customTokenUid: env.CUSTOM_TOKEN_UID || '',
 
   // Ports
   facilitatorPort: parseInt(env.FACILITATOR_PORT || '8402'),
@@ -30,5 +31,8 @@ module.exports = {
 
   // Escrow settings
   escrowDeadlineSeconds: parseInt(env.ESCROW_DEADLINE_SECONDS || '300'),
-  paymentAmount: parseInt(env.PAYMENT_AMOUNT || '100'),
+
+  // Payment amounts (in smallest unit — 1 HTR = 100, 1 hUSDC = 100)
+  htrPaymentAmount: parseInt(env.HTR_PAYMENT_AMOUNT || '100'),
+  customTokenPaymentAmount: parseInt(env.CUSTOM_TOKEN_PAYMENT_AMOUNT || '1000'),
 };

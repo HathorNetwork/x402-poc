@@ -46,14 +46,14 @@ This is a proof-of-concept implementation of the [x402 protocol](https://www.x40
 
 The trusted intermediary that verifies payments and triggers settlement. It exposes two endpoints:
 
-- `POST /x402/verify` — Queries the nano contract state on the Hathor full node. Checks that the escrow is `LOCKED`, the amount is sufficient, the seller address matches, and the facilitator address matches. Returns `{valid: true}` or `{valid: false, invalidReason: "..."}`.
+- `POST /x402/verify` — Queries the nano contract state on the Hathor full node. Checks that the escrow is `LOCKED`, the amount is sufficient, the seller address matches, the facilitator address matches, and the `token_uid` matches the requested `asset`. Returns `{valid: true}` or `{valid: false, invalidReason: "..."}`.
 - `POST /x402/settle` — Calls `release()` on the escrow contract, which withdraws the escrowed funds to the seller's address. Returns the settlement transaction ID.
 
 The facilitator needs its own funded wallet to sign `release()` transactions.
 
 **2. Resource Server** (`resource-server.js` — port 3000)
 
-Any HTTP server that sells access to a resource. This POC sells weather data for 1 HTR per request. The x402 middleware:
+Any HTTP server that sells access to a resource. This POC sells weather data and accepts **multiple tokens** — HTR and an optional custom token (e.g. hUSDC). The x402 middleware:
 
 1. If no `X-Payment` header → returns **402** with payment requirements (scheme, amount, seller, facilitator, blueprint ID)
 2. If `X-Payment` present → calls the facilitator to **verify** the escrow
@@ -63,11 +63,13 @@ Any HTTP server that sells access to a resource. This POC sells weather data for
 
 An AI agent / script that wants to access a paid resource. The flow:
 
-1. Makes a regular HTTP request → gets **402 Payment Required**
-2. Parses the payment requirements from the 402 response
-3. Creates an **X402Escrow nano contract** on Hathor — deposits the required amount
+1. Makes a regular HTTP request → gets **402 Payment Required** with one or more payment options
+2. **Picks a payment option** from the `accepts` array (by token preference)
+3. Creates an **X402Escrow nano contract** on Hathor — deposits the required amount in the chosen token
 4. Retries the request with the `X-Payment` header containing the `ncId`
 5. Receives the resource
+
+Supports `--token htr` or `--token custom` to choose which token to pay with.
 
 ## The X402Escrow Blueprint
 
@@ -98,6 +100,7 @@ The heart of the system is a [Hathor nano contract](https://hathor.network/resou
 - **Built-in refunds** — buyer can cancel anytime; anyone can refund after the deadline (dead man's switch)
 - **Trustless verification** — anyone can query the contract state on a public full node
 - **One escrow per payment** — clean isolation, each `ncId` is a receipt
+- **Token-agnostic** — works with HTR or any custom Hathor token (stablecoins, etc.)
 
 The blueprint source is in [`blueprint/x402_escrow.py`](blueprint/x402_escrow.py).
 
@@ -175,8 +178,11 @@ node facilitator.js
 # Terminal 2: Start the resource server
 node resource-server.js
 
-# Terminal 3: Run the client
+# Terminal 3: Run the client (defaults to HTR)
 node client.js
+
+# Or pay with a custom token (e.g. hUSDC)
+node client.js --token custom
 ```
 
 ### Expected output
@@ -235,22 +241,38 @@ docker run --env-file .env x402-poc node client.js
 
 ### 402 Response (Server -> Client)
 
+The `accepts` array can contain **multiple payment options** with different tokens. The client picks whichever it can pay with:
+
 ```json
 {
-  "accepts": [{
-    "scheme": "hathor-escrow",
-    "network": "hathor:privatenet",
-    "maxAmountRequired": "100",
-    "payTo": "WZe3ty22...",
-    "tokenUid": "00",
-    "extra": {
-      "facilitatorUrl": "http://localhost:8402",
-      "facilitatorAddress": "WcwKaUE5...",
-      "blueprintId": "00000022..."
+  "accepts": [
+    {
+      "scheme": "hathor-escrow",
+      "network": "hathor:privatenet",
+      "asset": "00",
+      "amount": "100",
+      "description": "Pay 1.00 HTR",
+      "payTo": "WZe3ty22...",
+      "extra": {
+        "facilitatorUrl": "http://localhost:8402",
+        "facilitatorAddress": "WcwKaUE5...",
+        "blueprintId": "00000022..."
+      }
+    },
+    {
+      "scheme": "hathor-escrow",
+      "network": "hathor:privatenet",
+      "asset": "000003e3...",
+      "amount": "1000",
+      "description": "Or pay 10.00 hUSDC",
+      "payTo": "WZe3ty22...",
+      "extra": { "..." : "..." }
     }
-  }]
+  ]
 }
 ```
+
+> **Note on `asset` field:** Following the x402 spec, the field is called `asset` (not `tokenUid`). For Hathor, the asset value is the token UID — `"00"` for HTR or the hex hash of a custom token.
 
 ### X-Payment Header (Client -> Server)
 

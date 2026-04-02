@@ -1,5 +1,6 @@
 // x402 Resource Server (Seller)
-// A simple API server that sells weather data for 1 HTR per request
+// A simple API server that sells weather data
+// Accepts payment in HTR or a custom token (e.g. hUSDC)
 // Uses x402 middleware to gate access
 
 const express = require('express');
@@ -10,31 +11,48 @@ const { log } = require('./helpers');
 const app = express();
 app.use(express.json());
 
+// Build the list of accepted payment options
+function buildAcceptsList(path) {
+  const base = {
+    scheme: 'hathor-escrow',
+    network: 'hathor:privatenet',
+    resource: `http://localhost:${config.resourceServerPort}${path}`,
+    mimeType: 'application/json',
+    payTo: config.sellerAddress,
+    maxTimeoutSeconds: config.escrowDeadlineSeconds,
+    extra: {
+      facilitatorUrl: `http://localhost:${config.facilitatorPort}`,
+      facilitatorAddress: config.facilitatorAddress,
+      blueprintId: config.blueprintId,
+      deadlineSeconds: config.escrowDeadlineSeconds,
+    },
+  };
+
+  const accepts = [
+    { ...base, asset: config.htrTokenUid, amount: String(config.htrPaymentAmount), description: 'Pay 1.00 HTR' },
+  ];
+
+  // If a custom token is configured, offer it as an alternative
+  if (config.customTokenUid) {
+    accepts.push({
+      ...base,
+      asset: config.customTokenUid,
+      amount: String(config.customTokenPaymentAmount),
+      description: 'Or pay 10.00 hUSDC',
+    });
+  }
+
+  return accepts;
+}
+
 // x402 middleware — checks for payment, returns 402 if none
 function x402Middleware(req, res, next) {
   const paymentHeader = req.headers['x-payment'];
 
   if (!paymentHeader) {
-    // No payment — return 402 with payment requirements
     log('RESOURCE-SERVER', `402 — No payment for ${req.path}`);
     return res.status(402).json({
-      accepts: [{
-        scheme: 'hathor-escrow',
-        network: 'hathor:privatenet',
-        maxAmountRequired: String(config.paymentAmount),
-        resource: `http://localhost:${config.resourceServerPort}${req.path}`,
-        description: 'Pay 1.00 HTR to access weather data',
-        mimeType: 'application/json',
-        payTo: config.sellerAddress,
-        tokenUid: config.htrTokenUid,
-        maxTimeoutSeconds: config.escrowDeadlineSeconds,
-        extra: {
-          facilitatorUrl: `http://localhost:${config.facilitatorPort}`,
-          facilitatorAddress: config.facilitatorAddress,
-          blueprintId: config.blueprintId,
-          deadlineSeconds: config.escrowDeadlineSeconds,
-        },
-      }],
+      accepts: buildAcceptsList(req.path),
       version: '1',
     });
   }
@@ -45,6 +63,18 @@ function x402Middleware(req, res, next) {
   next();
 }
 
+// Find which accepted option the client paid with by querying the facilitator.
+// The server sends ALL accepted options and the facilitator checks which one matches.
+function buildPaymentRequirements(path) {
+  return buildAcceptsList(path).map(opt => ({
+    scheme: opt.scheme,
+    network: opt.network,
+    maxAmountRequired: opt.amount,
+    payTo: opt.payTo,
+    asset: opt.asset,
+  }));
+}
+
 // Verify payment with facilitator, serve resource, then settle
 app.get('/weather', x402Middleware, async (req, res) => {
   const payment = req.x402Payment;
@@ -52,19 +82,17 @@ app.get('/weather', x402Middleware, async (req, res) => {
 
   log('RESOURCE-SERVER', `Verifying payment ncId=${ncId}`);
 
+  // Build all accepted payment requirements — the facilitator will match
+  // the on-chain escrow state against each one to find a valid match
+  const allRequirements = buildPaymentRequirements(req.path);
+
   // Step 1: Verify with facilitator
   const verifyResp = await fetch(`http://localhost:${config.facilitatorPort}/x402/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       paymentPayload: payment,
-      paymentRequirements: {
-        scheme: 'hathor-escrow',
-        network: 'hathor:privatenet',
-        maxAmountRequired: String(config.paymentAmount),
-        payTo: config.sellerAddress,
-        tokenUid: config.htrTokenUid,
-      },
+      paymentRequirements: allRequirements,
     }),
   });
   const verification = await verifyResp.json();
@@ -121,5 +149,5 @@ app.get('/weather', x402Middleware, async (req, res) => {
 app.listen(config.resourceServerPort, () => {
   log('RESOURCE-SERVER', `Weather API running on port ${config.resourceServerPort}`);
   log('RESOURCE-SERVER', `Seller address: ${config.sellerAddress}`);
-  log('RESOURCE-SERVER', `Price: ${config.paymentAmount} cents HTR per request`);
+  log('RESOURCE-SERVER', `Accepts: HTR (${config.htrPaymentAmount} cents)${config.customTokenUid ? `, hUSDC (${config.customTokenPaymentAmount} cents)` : ''}`);
 });
