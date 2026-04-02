@@ -9,7 +9,12 @@ services:
       HEADLESS_SEED_DEFAULT: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
       HEADLESS_ENABLED_PLUGINS: debug
     entrypoint: ["node", "dist/index.js"]
-    # No host ports — internal only, other services reach it via docker network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8000/wallet/status',r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   facilitator:
     build: .
@@ -22,9 +27,15 @@ services:
       FACILITATOR_ADDRESS: ${FACILITATOR_ADDRESS:-}
       SELLER_ADDRESS: ${SELLER_ADDRESS:-}
     command: ["node", "facilitator.js"]
-    # No host ports — resource-server reaches it via docker network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8402/x402/verify',r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
-      - wallet-headless
+      wallet-headless:
+        condition: service_healthy
 
   resource-server:
     build: .
@@ -38,17 +49,32 @@ services:
       RESOURCE_SERVER_PORT: "3001"
       FACILITATOR_URL: http://facilitator:8402
     command: ["node", "resource-server.js"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/weather',r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     ports:
       - "4021:3001"
     depends_on:
-      - wallet-headless
-      - facilitator
+      wallet-headless:
+        condition: service_healthy
+      facilitator:
+        condition: service_healthy
 
   dapp:
     build:
       context: ./dapp
       dockerfile: Dockerfile
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     ports:
       - "4020:3000"
     depends_on:
-      - resource-server
+      resource-server:
+        condition: service_healthy
