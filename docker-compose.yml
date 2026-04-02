@@ -27,6 +27,8 @@ services:
       FACILITATOR_ADDRESS: ${FACILITATOR_ADDRESS:-}
       SELLER_ADDRESS: ${SELLER_ADDRESS:-}
     command: ["node", "facilitator.js"]
+    ports:
+      - "8402:8402"
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:8402/x402/verify',r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))"]
       interval: 10s
