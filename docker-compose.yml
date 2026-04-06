@@ -1,6 +1,7 @@
 services:
   wallet-headless:
     image: hathornetwork/hathor-wallet-headless:latest
+    pull_policy: always
     environment:
       HEADLESS_HTTP_BIND: "0.0.0.0"
       HEADLESS_HTTP_PORT: "8000"
