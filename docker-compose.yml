@@ -7,7 +7,6 @@ services:
       HEADLESS_NETWORK: testnet
       HEADLESS_SERVER: https://node1.playground.testnet.hathor.network/v1a/
       HEADLESS_SEED_DEFAULT: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-      HEADLESS_ENABLED_PLUGINS: debug
       HEADLESS_TX_MINING_URL: https://txmining.playground.testnet.hathor.network/
     entrypoint: ["node", "dist/index.js"]
     healthcheck:
