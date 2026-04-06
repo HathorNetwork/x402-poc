@@ -58,8 +58,8 @@ async function settleEscrow(ncId) {
   }, config.facilitatorWalletId);
 
   if (!result.success) return { success: false, error: result.message || 'release() failed' };
-  await waitForTxConfirmation(result.hash);
-  return { success: true, txId: result.hash, network: 'hathor:privatenet' };
+  // Don't wait for block confirmation — tx is accepted by the node, it will confirm eventually
+  return { success: true, txId: result.hash, network: `hathor:${config.network || 'privatenet'}` };
 }
 
 // ============================================================================
@@ -119,8 +119,7 @@ async function settleChannel(channelId, amount, sellerAddress) {
   }, config.facilitatorWalletId);
 
   if (!result.success) return { success: false, error: result.message || 'spend() failed' };
-  await waitForTxConfirmation(result.hash);
-  return { success: true, txId: result.hash, network: 'hathor:privatenet' };
+  return { success: true, txId: result.hash, network: `hathor:${config.network || 'privatenet'}` };
 }
 
 // ============================================================================
