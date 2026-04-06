@@ -115,31 +115,7 @@ app.get('/weather', x402Middleware, async (req, res) => {
 
   log('RESOURCE-SERVER', `Payment VALID`);
 
-  // Step 2: Settle BEFORE serving the resource
-  // For channels: spend() must confirm so on-chain state is updated before next request
-  // For escrow: release() must confirm so funds reach the seller
-  log('RESOURCE-SERVER', `Settling ${scheme} id=${id}`);
-  const settleBody = { paymentPayload: payment };
-  if (isChannel) {
-    settleBody.amount = config.htrPaymentAmount;
-    settleBody.sellerAddress = config.sellerAddress;
-  }
-
-  const settleResp = await fetch(`${config.facilitatorUrl}/x402/settle`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settleBody),
-  });
-  const settlement = await settleResp.json();
-
-  if (!settlement.success) {
-    log('RESOURCE-SERVER', `Settlement FAILED: ${settlement.error}`);
-    return res.status(500).json({ error: 'Settlement failed', reason: settlement.error });
-  }
-
-  log('RESOURCE-SERVER', `Settlement confirmed — txId=${settlement.txId}`);
-
-  // Step 3: Serve the resource (only after settlement is confirmed)
+  // Step 2: Serve the resource first, then settle
   const weatherData = {
     location: 'Sao Paulo, Brazil',
     temperature: 28,
@@ -150,16 +126,32 @@ app.get('/weather', x402Middleware, async (req, res) => {
     timestamp: new Date().toISOString(),
   };
 
+  // Serve immediately
   res.json({
     data: weatherData,
     payment: {
       success: true,
       scheme,
-      network: 'hathor:${config.network}',
+      network: `hathor:${config.network}`,
       id,
-      settleTxId: settlement.txId,
     },
   });
+
+  // Settle async after response
+  log('RESOURCE-SERVER', `Settling ${scheme} id=${id} (async)`);
+  const settleBody = { paymentPayload: payment };
+  if (isChannel) {
+    settleBody.amount = config.htrPaymentAmount;
+    settleBody.sellerAddress = config.sellerAddress;
+  }
+  fetch(`${config.facilitatorUrl}/x402/settle`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settleBody),
+  })
+    .then(r => r.json())
+    .then(r => log('RESOURCE-SERVER', r.success ? `Settlement OK — ${r.txId}` : `Settlement FAILED: ${r.error}`))
+    .catch(e => log('RESOURCE-SERVER', `Settlement error: ${e.message}`));
 });
 
 app.listen(config.resourceServerPort, () => {
