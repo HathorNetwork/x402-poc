@@ -51,7 +51,7 @@ async function main() {
   log('CLIENT', `Got 402 Payment Required`);
   log('CLIENT', `  ${paymentRequired.accepts.length} payment option(s) available:`);
   for (const opt of paymentRequired.accepts) {
-    log('CLIENT', `    - ${opt.description} (asset: ${opt.asset}, amount: ${opt.amount})`);
+    log('CLIENT', `    - ${opt.description} (asset: ${opt.asset}, price: ${opt.price})`);
   }
   log('CLIENT', '');
 
@@ -59,7 +59,7 @@ async function main() {
   const chosen = pickPaymentOption(paymentRequired.accepts);
   log('CLIENT', `Step 2: Chose payment option: ${chosen.description}`);
   log('CLIENT', `  Asset: ${chosen.asset}`);
-  log('CLIENT', `  Amount: ${chosen.amount}`);
+  log('CLIENT', `  Price: ${chosen.price}`);
   log('CLIENT', `  Pay to: ${chosen.payTo}`);
   log('CLIENT', `  Facilitator: ${chosen.extra.facilitatorAddress}`);
   log('CLIENT', '');
@@ -68,7 +68,7 @@ async function main() {
   log('CLIENT', 'Step 3: Creating escrow nano contract...');
 
   const deadline = Math.floor(Date.now() / 1000) + chosen.extra.deadlineSeconds;
-  const amount = parseInt(chosen.amount);
+  const amount = parseInt(chosen.price);
 
   const createResult = await walletRequest('POST', '/wallet/nano-contracts/create', {
     blueprint_id: chosen.extra.blueprintId,
@@ -107,8 +107,9 @@ async function main() {
   log('CLIENT', 'Step 4: Retrying request with payment proof...');
 
   const paymentPayload = {
+    x402Version: 2,
     scheme: 'hathor-escrow',
-    network: 'hathor:privatenet',
+    network: `hathor:${config.network}`,
     payload: {
       ncId: ncId,
       depositTxId: ncId,
@@ -118,7 +119,7 @@ async function main() {
 
   const paidResp = await fetch(`http://localhost:${config.resourceServerPort}/weather`, {
     headers: {
-      'X-Payment': JSON.stringify(paymentPayload),
+      'PAYMENT-SIGNATURE': Buffer.from(JSON.stringify(paymentPayload)).toString('base64'),
     },
   });
 

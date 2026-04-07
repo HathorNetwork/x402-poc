@@ -11,6 +11,12 @@ const app = express();
 app.use(express.json());
 
 // ============================================================================
+// Settlement cache for Payment-Identifier idempotency (#8)
+// Key: ncId or channelId+amount, Value: settlement result
+// ============================================================================
+const settlementCache = new Map();
+
+// ============================================================================
 // ESCROW verification/settlement (one contract per payment)
 // ============================================================================
 
@@ -26,24 +32,24 @@ function validateEscrowAgainstRequirement(fields, req) {
 
 async function verifyEscrow(ncId, requirements) {
   const stateResp = await getNanoContractState(ncId);
-  if (!stateResp.success) return { valid: false, invalidReason: `Cannot query contract: ${stateResp.message}` };
+  if (!stateResp.success) return { x402Version: 2, valid: false, invalidReason: `Cannot query contract: ${stateResp.message}` };
 
   const reqs = Array.isArray(requirements) ? requirements : [requirements];
   let lastErrors = [];
   for (const req of reqs) {
     const errors = validateEscrowAgainstRequirement(stateResp.fields, req);
-    if (errors.length === 0) return { valid: true };
+    if (errors.length === 0) return { x402Version: 2, valid: true };
     lastErrors = errors;
   }
-  return { valid: false, invalidReason: lastErrors.join('; ') };
+  return { x402Version: 2, valid: false, invalidReason: lastErrors.join('; ') };
 }
 
 async function settleEscrow(ncId) {
   const stateResp = await getNanoContractState(ncId);
-  if (!stateResp.success) return { success: false, error: `Cannot query contract` };
+  if (!stateResp.success) return { x402Version: 2, success: false, error: `Cannot query contract` };
 
   const fields = stateResp.fields;
-  if (fields.phase.value !== 'LOCKED') return { success: false, error: `Escrow not locked (phase=${fields.phase.value})` };
+  if (fields.phase.value !== 'LOCKED') return { x402Version: 2, success: false, error: `Escrow not locked (phase=${fields.phase.value})` };
 
   const amount = fields.amount.value;
   const seller = fields.seller.value;
@@ -57,9 +63,9 @@ async function settleEscrow(ncId) {
     data: { args: [], actions: [{ type: 'withdrawal', token: tokenUid, amount, address: seller }] },
   }, config.facilitatorWalletId);
 
-  if (!result.success) return { success: false, error: result.message || 'release() failed' };
+  if (!result.success) return { x402Version: 2, success: false, error: result.message || 'release() failed' };
   // Don't wait for block confirmation — tx is accepted by the node, it will confirm eventually
-  return { success: true, txId: result.hash, network: `hathor:${config.network || 'privatenet'}` };
+  return { x402Version: 2, success: true, txId: result.hash, network: `hathor:${config.network || 'privatenet'}` };
 }
 
 // ============================================================================
@@ -77,35 +83,35 @@ async function getChannelState(channelId) {
 
 async function verifyChannel(channelId, requirements) {
   const stateResp = await getChannelState(channelId);
-  if (!stateResp.success) return { valid: false, invalidReason: `Cannot query channel: ${stateResp.message}` };
+  if (!stateResp.success) return { x402Version: 2, valid: false, invalidReason: `Cannot query channel: ${stateResp.message}` };
 
   const fields = stateResp.fields;
-  if (fields.phase.value !== 'OPEN') return { valid: false, invalidReason: `Channel not open (phase=${fields.phase.value})` };
-  if (fields.facilitator.value !== config.facilitatorAddress) return { valid: false, invalidReason: 'Facilitator mismatch' };
+  if (fields.phase.value !== 'OPEN') return { x402Version: 2, valid: false, invalidReason: `Channel not open (phase=${fields.phase.value})` };
+  if (fields.facilitator.value !== config.facilitatorAddress) return { x402Version: 2, valid: false, invalidReason: 'Facilitator mismatch' };
 
   const remaining = fields.total_deposited.value - fields.total_spent.value;
   const reqs = Array.isArray(requirements) ? requirements : [requirements];
 
   for (const req of reqs) {
-    const amount = parseInt(req.maxAmountRequired || req.amount);
+    const amount = parseInt(req.maxAmountRequired || req.price || req.amount);
     if (remaining >= amount) {
       if (req.asset && fields.token_uid.value !== req.asset) continue;
-      return { valid: true, remaining };
+      return { x402Version: 2, valid: true, remaining };
     }
   }
-  return { valid: false, invalidReason: `Insufficient channel balance (remaining: ${remaining})` };
+  return { x402Version: 2, valid: false, invalidReason: `Insufficient channel balance (remaining: ${remaining})` };
 }
 
 async function settleChannel(channelId, amount, sellerAddress) {
   const stateResp = await getChannelState(channelId);
-  if (!stateResp.success) return { success: false, error: 'Cannot query channel' };
+  if (!stateResp.success) return { x402Version: 2, success: false, error: 'Cannot query channel' };
 
   const fields = stateResp.fields;
-  if (fields.phase.value !== 'OPEN') return { success: false, error: 'Channel not open' };
+  if (fields.phase.value !== 'OPEN') return { x402Version: 2, success: false, error: 'Channel not open' };
 
   const tokenUid = fields.token_uid.value;
   const remaining = fields.total_deposited.value - fields.total_spent.value;
-  if (remaining < amount) return { success: false, error: `Insufficient balance (${remaining} < ${amount})` };
+  if (remaining < amount) return { x402Version: 2, success: false, error: `Insufficient balance (${remaining} < ${amount})` };
 
   log('FACILITATOR', `Channel spend() — ${amount} of ${tokenUid} to ${sellerAddress}`);
   const result = await walletRequest('POST', '/wallet/nano-contracts/execute', {
@@ -118,8 +124,8 @@ async function settleChannel(channelId, amount, sellerAddress) {
     },
   }, config.facilitatorWalletId);
 
-  if (!result.success) return { success: false, error: result.message || 'spend() failed' };
-  return { success: true, txId: result.hash, network: `hathor:${config.network || 'privatenet'}` };
+  if (!result.success) return { x402Version: 2, success: false, error: result.message || 'spend() failed' };
+  return { x402Version: 2, success: true, txId: result.hash, network: `hathor:${config.network || 'privatenet'}` };
 }
 
 // ============================================================================
@@ -154,18 +160,101 @@ app.post('/x402/settle', async (req, res) => {
     const { channelId } = paymentPayload.payload;
     const amount = req.body.amount || paymentPayload.payload.amount;
     const sellerAddress = req.body.sellerAddress || paymentPayload.payload.sellerAddress;
+    const cacheKey = `channel:${channelId}:${amount}`;
+
+    // Idempotency: return cached result if already settled with same params
+    if (settlementCache.has(cacheKey)) {
+      log('FACILITATOR', `Channel settle CACHED for channelId=${channelId}`);
+      return res.json(settlementCache.get(cacheKey));
+    }
+
     log('FACILITATOR', `Channel settle for channelId=${channelId}, amount=${amount}`);
     const result = await settleChannel(channelId, amount, sellerAddress);
     log('FACILITATOR', `Channel settle ${result.success ? 'SUCCESS' : 'FAILED'}: ${result.txId || result.error}`);
+    if (result.success) settlementCache.set(cacheKey, result);
     return res.json(result);
   }
 
   // Default: escrow
   const { ncId } = paymentPayload.payload;
+  const cacheKey = `escrow:${ncId}`;
+
+  // Idempotency: return cached result if already settled
+  if (settlementCache.has(cacheKey)) {
+    log('FACILITATOR', `Escrow settle CACHED for ncId=${ncId}`);
+    return res.json(settlementCache.get(cacheKey));
+  }
+
   log('FACILITATOR', `Escrow settle for ncId=${ncId}`);
   const result = await settleEscrow(ncId);
   log('FACILITATOR', `Escrow settle ${result.success ? 'SUCCESS' : 'FAILED'}: ${result.txId || result.error}`);
+  if (result.success) settlementCache.set(cacheKey, result);
   res.json(result);
+});
+
+// ============================================================================
+// Health check & wallet auto-recovery (#12)
+// ============================================================================
+
+async function checkWalletStatus(walletId) {
+  try {
+    const result = await walletRequest('GET', '/wallet/status', null, walletId);
+    return result.statusCode === 3; // 3 = READY
+  } catch {
+    return false;
+  }
+}
+
+async function restartWallet(walletId, seed) {
+  try {
+    log('FACILITATOR', `Restarting wallet: ${walletId}`);
+    // Stop first (ignore errors if not started)
+    await walletRequest('POST', '/wallet/stop', {}, walletId).catch(() => {});
+    // Start with seed
+    const result = await require('node-fetch')(`${config.walletHeadlessUrl}/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 'wallet-id': walletId, seed }),
+    }).then(r => r.json());
+    log('FACILITATOR', `Wallet ${walletId} restart result: ${JSON.stringify(result)}`);
+    return result.success !== false;
+  } catch (err) {
+    log('FACILITATOR', `Wallet ${walletId} restart failed: ${err.message}`);
+    return false;
+  }
+}
+
+async function ensureWalletsReady() {
+  const facilitatorOk = await checkWalletStatus(config.facilitatorWalletId);
+  const sellerOk = await checkWalletStatus(config.sellerWalletId);
+
+  if (!facilitatorOk && process.env.FACILITATOR_SEED) {
+    await restartWallet(config.facilitatorWalletId, process.env.FACILITATOR_SEED);
+  }
+  if (!sellerOk && process.env.SELLER_SEED) {
+    await restartWallet(config.sellerWalletId, process.env.SELLER_SEED);
+  }
+}
+
+// Periodic wallet health check (every 30 seconds)
+setInterval(() => {
+  ensureWalletsReady().catch(err => log('FACILITATOR', `Wallet check error: ${err.message}`));
+}, 30000);
+
+app.get('/health', async (req, res) => {
+  const facilitatorOk = await checkWalletStatus(config.facilitatorWalletId);
+  const sellerOk = await checkWalletStatus(config.sellerWalletId);
+  const healthy = facilitatorOk && sellerOk;
+
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'healthy' : 'degraded',
+    wallets: {
+      facilitator: facilitatorOk ? 'ready' : 'disconnected',
+      seller: sellerOk ? 'ready' : 'disconnected',
+    },
+    settlementCacheSize: settlementCache.size,
+    uptime: process.uptime(),
+  });
 });
 
 app.listen(config.facilitatorPort, () => {
@@ -173,4 +262,6 @@ app.listen(config.facilitatorPort, () => {
   log('FACILITATOR', `Facilitator address: ${config.facilitatorAddress}`);
   log('FACILITATOR', `Escrow blueprint: ${config.blueprintId}`);
   log('FACILITATOR', `Channel blueprint: ${config.channelBlueprintId}`);
+  // Initial wallet check on startup
+  ensureWalletsReady().catch(err => log('FACILITATOR', `Initial wallet check error: ${err.message}`));
 });

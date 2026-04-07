@@ -11,7 +11,7 @@ interface PaymentOption {
   scheme: string;
   network: string;
   asset: string;
-  amount: string;
+  price: string;
   description: string;
   resource: string;
   payTo: string;
@@ -80,12 +80,13 @@ export function X402Fetch() {
   // Try to pay with an existing channel (instant — no wallet interaction)
   const payWithChannel = async (channelId: string): Promise<boolean> => {
     const paymentPayload = {
+      x402Version: 2,
       scheme: 'hathor-channel',
       network: `hathor:${network}`,
       payload: { channelId, buyerAddress: address },
     };
 
-    const resp = await fetch(url, { mode: 'cors', headers: { 'X-Payment': JSON.stringify(paymentPayload) } });
+    const resp = await fetch(url, { mode: 'cors', headers: { 'PAYMENT-SIGNATURE': btoa(JSON.stringify(paymentPayload)) } });
     if (!resp.ok) return false;
 
     const data = await resp.json();
@@ -154,7 +155,7 @@ export function X402Fetch() {
       if (isChannel) {
         // Create a new channel with 10x the per-request amount
         const deadline = Math.floor(Date.now() / 1000) + 3600;
-        const deposit = parseInt(opt.amount) * 10;
+        const deposit = parseInt(opt.price) * 10;
         toast.info('Confirm the channel deposit in your wallet...');
 
         const result = await sendNanoContractTx({
@@ -176,7 +177,7 @@ export function X402Fetch() {
         const result = await sendNanoContractTx({
           network, blueprint_id: opt.extra.blueprintId, method: 'initialize',
           args: [opt.payTo, opt.extra.facilitatorAddress, opt.asset, deadline, opt.resource, 'dapp-x402'],
-          actions: [{ type: 'deposit', amount: opt.amount, token: opt.asset }],
+          actions: [{ type: 'deposit', amount: opt.price, token: opt.asset }],
           push_tx: true,
         });
         id = result?.response?.hash || result?.hash || result?.response?.response?.hash;
@@ -194,10 +195,10 @@ export function X402Fetch() {
       // Retry with payment proof
       setStep('retrying');
       const paymentPayload = isChannel
-        ? { scheme: 'hathor-channel', network: `hathor:${network}`, payload: { channelId: id, buyerAddress: address } }
-        : { scheme: 'hathor-escrow', network: `hathor:${network}`, payload: { ncId: id, depositTxId: id, buyerAddress: address } };
+        ? { x402Version: 2, scheme: 'hathor-channel', network: `hathor:${network}`, payload: { channelId: id, buyerAddress: address } }
+        : { x402Version: 2, scheme: 'hathor-escrow', network: `hathor:${network}`, payload: { ncId: id, depositTxId: id, buyerAddress: address } };
 
-      const paidResp = await fetch(url, { mode: 'cors', headers: { 'X-Payment': JSON.stringify(paymentPayload) } });
+      const paidResp = await fetch(url, { mode: 'cors', headers: { 'PAYMENT-SIGNATURE': btoa(JSON.stringify(paymentPayload)) } });
       if (!paidResp.ok) {
         const errBody = await paidResp.json().catch(() => ({}));
         throw new Error(errBody.reason || errBody.error || `Rejected: ${paidResp.status}`);
@@ -207,7 +208,7 @@ export function X402Fetch() {
       setResourceData(data);
       setStep('done');
       toast.success('Resource received!');
-      addToHistory(opt.scheme, id, opt.amount);
+      addToHistory(opt.scheme, id, opt.price);
       refreshBalance('00', network);
     } catch (err: any) {
       setError(err.message);
@@ -229,7 +230,7 @@ export function X402Fetch() {
     throw new Error('Confirmation timeout (60s)');
   };
 
-  const amountDisplay = selectedOption ? `${(parseInt(selectedOption.amount) / 100).toFixed(2)} HTR` : '';
+  const amountDisplay = selectedOption ? `${(parseInt(selectedOption.price) / 100).toFixed(2)} HTR` : '';
   const isChannel = selectedOption?.scheme === 'hathor-channel';
 
   return (
@@ -320,7 +321,7 @@ export function X402Fetch() {
             {isChannel && (
               <div className="flex justify-between">
                 <span className="text-slate-400">Channel deposit (10 requests)</span>
-                <span className="text-white font-bold">{(parseInt(selectedOption.amount) * 10 / 100).toFixed(2)} HTR</span>
+                <span className="text-white font-bold">{(parseInt(selectedOption.price) * 10 / 100).toFixed(2)} HTR</span>
               </div>
             )}
             <div className="flex justify-between">
@@ -340,7 +341,7 @@ export function X402Fetch() {
               className="flex-1 px-6 py-3 rounded-lg font-medium transition-colors disabled:opacity-50"
               style={{ background: isConnected ? 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)' : '#475569', color: '#0f172a' }}>
               {!isConnected ? 'Connect Wallet First'
-                : isChannel ? `Open Channel (${(parseInt(selectedOption.amount) * 10 / 100).toFixed(2)} HTR)`
+                : isChannel ? `Open Channel (${(parseInt(selectedOption.price) * 10 / 100).toFixed(2)} HTR)`
                 : `Pay ${amountDisplay}`}
             </button>
             <button onClick={reset} className="px-4 py-3 rounded-lg text-slate-400 hover:text-white border border-slate-600 transition-colors">Cancel</button>

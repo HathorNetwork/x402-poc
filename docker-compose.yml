@@ -33,7 +33,7 @@ services:
     ports:
       - "8402:8402"
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8402/x402/verify',r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))"]
+      test: ["CMD", "curl", "-f", "http://localhost:8402/health"]
       interval: 10s
       timeout: 5s
       retries: 3

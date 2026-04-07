@@ -14,8 +14,8 @@ app.use(express.json());
 // CORS — allow browser dApps to call this server
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, X-Payment');
-  res.header('Access-Control-Expose-Headers', 'X-Payment-Response');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, PAYMENT-SIGNATURE, X-Payment');
+  res.header('Access-Control-Expose-Headers', 'PAYMENT-RESPONSE, X-Payment-Response');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
@@ -39,7 +39,7 @@ function buildAcceptsList(path) {
     payTo: config.sellerAddress,
     maxTimeoutSeconds: config.escrowDeadlineSeconds,
     asset: config.htrTokenUid,
-    amount: String(config.htrPaymentAmount),
+    price: String(config.htrPaymentAmount),
     description: `Pay ${(config.htrPaymentAmount / 100).toFixed(2)} HTR (single escrow)`,
     extra: { ...baseExtra, blueprintId: config.blueprintId },
   });
@@ -54,7 +54,7 @@ function buildAcceptsList(path) {
       payTo: config.sellerAddress,
       maxTimeoutSeconds: config.escrowDeadlineSeconds,
       asset: config.htrTokenUid,
-      amount: String(config.htrPaymentAmount),
+      price: String(config.htrPaymentAmount),
       description: `Pay ${(config.htrPaymentAmount / 100).toFixed(2)} HTR via channel (saves escrow creation)`,
       extra: { ...baseExtra, channelBlueprintId: config.channelBlueprintId },
     });
@@ -65,17 +65,22 @@ function buildAcceptsList(path) {
 
 // x402 middleware — checks for payment, returns 402 if none
 function x402Middleware(req, res, next) {
-  const paymentHeader = req.headers['x-payment'];
+  // x402 V2: PAYMENT-SIGNATURE (Base64-encoded JSON), fallback to X-Payment (raw JSON) for backward compat
+  const signatureHeader = req.headers['payment-signature'];
+  const legacyHeader = req.headers['x-payment'];
 
-  if (!paymentHeader) {
+  if (!signatureHeader && !legacyHeader) {
     log('RESOURCE-SERVER', `402 — No payment for ${req.path}`);
     return res.status(402).json({
+      x402Version: 2,
       accepts: buildAcceptsList(req.path),
       version: '1',
     });
   }
 
-  const payment = JSON.parse(paymentHeader);
+  const payment = signatureHeader
+    ? JSON.parse(Buffer.from(signatureHeader, 'base64').toString('utf-8'))
+    : JSON.parse(legacyHeader);
   req.x402Payment = payment;
   next();
 }
@@ -84,7 +89,7 @@ function buildPaymentRequirements(path) {
   return buildAcceptsList(path).map(opt => ({
     scheme: opt.scheme,
     network: opt.network,
-    maxAmountRequired: opt.amount,
+    maxAmountRequired: opt.price,
     payTo: opt.payTo,
     asset: opt.asset,
   }));
@@ -150,15 +155,20 @@ app.get('/weather', x402Middleware, async (req, res) => {
     timestamp: new Date().toISOString(),
   };
 
+  // x402 V2: PAYMENT-RESPONSE header with Base64-encoded settlement result
+  const paymentResponse = {
+    x402Version: 2,
+    success: true,
+    scheme,
+    network: `hathor:${config.network}`,
+    ...(isChannel ? { channelId: id } : { ncId: id }),
+    settleTxId: settlement.txId,
+  };
+  res.set('PAYMENT-RESPONSE', Buffer.from(JSON.stringify(paymentResponse)).toString('base64'));
+
   res.json({
     data: weatherData,
-    payment: {
-      success: true,
-      scheme,
-      network: `hathor:${config.network}`,
-      id,
-      settleTxId: settlement.txId,
-    },
+    payment: paymentResponse,
   });
 });
 
