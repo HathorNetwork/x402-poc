@@ -42,12 +42,10 @@ export class HathorRPCService {
     if (this.customRequest) {
       try {
         const result = await this.customRequest<T>(method, params);
-        console.log(`RPC [${method}] response:`, JSON.stringify(result, null, 2));
+        console.log(`RPC [${method}] response:`, result);
         return result;
       } catch (error: any) {
-        console.error(`RPC [${method}] failed via custom request. Raw error:`, error);
-        console.error(`RPC [${method}] error keys:`, error ? Object.keys(error) : 'null/undefined');
-        try { console.error(`RPC [${method}] error JSON:`, JSON.stringify(error)); } catch {}
+        console.error(`RPC [${method}] failed via custom request:`, error);
         throw new Error(error?.message || 'RPC request failed');
       }
     }
@@ -68,16 +66,10 @@ export class HathorRPCService {
         },
       });
 
-      console.log(`RPC [${method}] response:`, JSON.stringify(result, null, 2));
+      console.log(`RPC [${method}] response:`, result);
       return result;
     } catch (error: any) {
-      console.error(`RPC [${method}] failed via WalletConnect:`, {
-        message: error?.message,
-        code: error?.code,
-        data: error?.data,
-        stack: error?.stack,
-        raw: error,
-      });
+      console.error(`RPC [${method}] failed via WalletConnect:`, error);
       throw new Error(error?.message || 'RPC request failed');
     }
   }

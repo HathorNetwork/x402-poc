@@ -15,7 +15,7 @@ async function fetchBalanceFromFullnode(address: string, tokenUid: string, netwo
   if (!data.success) throw new Error(`Fullnode balance query error: ${data.message}`);
   const tokenBalance = data.tokens_data?.[tokenUid];
   if (!tokenBalance) return 0n;
-  return BigInt(tokenBalance.unlocked);
+  return BigInt(tokenBalance.received - tokenBalance.spent);
 }
 
 interface WalletContextType {
