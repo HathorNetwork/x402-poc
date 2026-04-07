@@ -6,6 +6,18 @@ import { HathorRPCService } from '@/lib/hathorRPC';
 import { useUnifiedWallet } from './UnifiedWalletContext';
 import { config, Network } from '@/lib/config';
 
+// Direct fullnode balance query — fallback when WalletConnect RPC fails
+async function fetchBalanceFromFullnode(address: string, tokenUid: string, network: Network): Promise<bigint> {
+  const nodeUrl = config.hathorNodeUrls[network];
+  const resp = await fetch(`${nodeUrl}/thin_wallet/address_balance?address=${address}`);
+  if (!resp.ok) throw new Error(`Fullnode balance query failed: ${resp.status}`);
+  const data = await resp.json();
+  if (!data.success) throw new Error(`Fullnode balance query error: ${data.message}`);
+  const tokenBalance = data.tokens_data?.[tokenUid];
+  if (!tokenBalance) return 0n;
+  return BigInt(tokenBalance.unlocked);
+}
+
 interface WalletContextType {
   connected: boolean;
   address: string | null;
@@ -128,14 +140,19 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setBalanceVerified(true);
       saveCachedBalance(addr, balanceValue);
     } catch (error: any) {
-      console.error('Balance fetch failed:', {
-        message: error?.message,
-        code: error?.code,
-        data: error?.data,
-        raw: error,
-      });
-      setBalance(0n);
-      setBalanceVerified(false);
+      console.error('Balance fetch via wallet RPC failed, trying fullnode fallback:', error?.message);
+      // Fallback: query the fullnode directly (read-only, no wallet needed)
+      try {
+        const balanceValue = await fetchBalanceFromFullnode(addr, tokenUid, network);
+        console.log('Fullnode fallback balance:', balanceValue.toString());
+        setBalance(balanceValue);
+        setBalanceVerified(true);
+        saveCachedBalance(addr, balanceValue);
+      } catch (fallbackError: any) {
+        console.error('Fullnode balance fallback also failed:', fallbackError?.message);
+        setBalance(0n);
+        setBalanceVerified(false);
+      }
     } finally {
       setIsLoadingBalance(false);
     }
