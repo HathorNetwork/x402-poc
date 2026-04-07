@@ -160,18 +160,10 @@ app.post('/x402/settle', async (req, res) => {
     const { channelId } = paymentPayload.payload;
     const amount = req.body.amount || paymentPayload.payload.amount;
     const sellerAddress = req.body.sellerAddress || paymentPayload.payload.sellerAddress;
-    const cacheKey = `channel:${channelId}:${amount}`;
-
-    // Idempotency: return cached result if already settled with same params
-    if (settlementCache.has(cacheKey)) {
-      log('FACILITATOR', `Channel settle CACHED for channelId=${channelId}`);
-      return res.json(settlementCache.get(cacheKey));
-    }
-
+    // No idempotency cache for channels — same channelId is reused across requests
     log('FACILITATOR', `Channel settle for channelId=${channelId}, amount=${amount}`);
     const result = await settleChannel(channelId, amount, sellerAddress);
     log('FACILITATOR', `Channel settle ${result.success ? 'SUCCESS' : 'FAILED'}: ${result.txId || result.error}`);
-    if (result.success) settlementCache.set(cacheKey, result);
     return res.json(result);
   }
 
