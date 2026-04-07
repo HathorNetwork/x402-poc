@@ -128,7 +128,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setBalanceVerified(true);
       saveCachedBalance(addr, balanceValue);
     } catch (error: any) {
-      console.log('Balance fetch was rejected or failed:', error);
+      console.error('Balance fetch failed:', {
+        message: error?.message,
+        code: error?.code,
+        data: error?.data,
+        raw: error,
+      });
       setBalance(0n);
       setBalanceVerified(false);
     } finally {

@@ -42,9 +42,16 @@ export class HathorRPCService {
     if (this.customRequest) {
       try {
         const result = await this.customRequest<T>(method, params);
+        console.log(`RPC [${method}] response:`, JSON.stringify(result, null, 2));
         return result;
       } catch (error: any) {
-        console.error('RPC request failed:', error);
+        console.error(`RPC [${method}] failed via custom request:`, {
+          message: error?.message,
+          code: error?.code,
+          data: error?.data,
+          stack: error?.stack,
+          raw: error,
+        });
         throw new Error(error?.message || 'RPC request failed');
       }
     }
@@ -55,6 +62,7 @@ export class HathorRPCService {
     }
 
     try {
+      console.log(`RPC [${method}] requesting via WalletConnect (chain: hathor:${this.network}, topic: ${this.session.topic.slice(0, 8)}...)`);
       const result = await this.client.request<T>({
         chainId: `hathor:${this.network}`,
         topic: this.session.topic,
@@ -64,9 +72,16 @@ export class HathorRPCService {
         },
       });
 
+      console.log(`RPC [${method}] response:`, JSON.stringify(result, null, 2));
       return result;
     } catch (error: any) {
-      console.error('RPC request failed:', error);
+      console.error(`RPC [${method}] failed via WalletConnect:`, {
+        message: error?.message,
+        code: error?.code,
+        data: error?.data,
+        stack: error?.stack,
+        raw: error,
+      });
       throw new Error(error?.message || 'RPC request failed');
     }
   }
