@@ -21,6 +21,7 @@ interface PaymentOption {
     blueprintId?: string;
     channelBlueprintId?: string;
     deadlineSeconds: number;
+    pricing?: 'exact' | 'upto';
   };
 }
 
@@ -30,6 +31,8 @@ interface PaymentHistory {
   scheme: string;
   contractId: string;
   amount: string;
+  chargedAmount?: string;
+  refundAmount?: string;
   timestamp: Date;
 }
 
@@ -73,8 +76,8 @@ export function X402Fetch() {
     setContractId(null);
   };
 
-  const addToHistory = (scheme: string, id: string, amount: string) => {
-    setHistory(prev => [{ id: Date.now().toString(), url, scheme, contractId: id, amount, timestamp: new Date() }, ...prev]);
+  const addToHistory = (scheme: string, id: string, amount: string, chargedAmount?: string, refundAmount?: string) => {
+    setHistory(prev => [{ id: Date.now().toString(), url, scheme, contractId: id, amount, chargedAmount, refundAmount, timestamp: new Date() }, ...prev]);
   };
 
   // Try to pay with an existing channel (instant — no wallet interaction)
@@ -142,11 +145,12 @@ export function X402Fetch() {
     }
   };
 
-  // Step 2: Pay (escrow or channel)
+  // Step 2: Pay (escrow, channel, or upto escrow)
   const handlePay = async () => {
     if (!selectedOption || !isConnected || !address) return;
     const opt = selectedOption;
     const isChannel = opt.scheme === 'hathor-channel';
+    const isUpto = opt.scheme === 'hathor-escrow-upto';
 
     try {
       setStep('creating');
@@ -170,9 +174,12 @@ export function X402Fetch() {
         setActiveChannel(id);
         toast.success(`Channel created: ${id.slice(0, 12)}...`);
       } else {
-        // Create a one-shot escrow
+        // Create a one-shot escrow (same initialize() for both exact and upto —
+        // the difference is how the facilitator settles it: release() vs release_upto()).
         const deadline = Math.floor(Date.now() / 1000) + opt.extra.deadlineSeconds;
-        toast.info('Confirm the escrow deposit in your wallet...');
+        toast.info(isUpto
+          ? `Confirm the escrow deposit (max ${(parseInt(opt.price) / 100).toFixed(2)} HTR) in your wallet...`
+          : 'Confirm the escrow deposit in your wallet...');
 
         const result = await sendNanoContractTx({
           network, blueprint_id: opt.extra.blueprintId, method: 'initialize',
@@ -192,11 +199,11 @@ export function X402Fetch() {
       setStep('waiting_confirmation');
       await waitForConfirmation(id);
 
-      // Retry with payment proof
+      // Retry with payment proof — scheme in the payload must match the 402 accept
       setStep('retrying');
       const paymentPayload = isChannel
         ? { x402Version: 2, scheme: 'hathor-channel', network: `hathor:${network}`, payload: { channelId: id, buyerAddress: address } }
-        : { x402Version: 2, scheme: 'hathor-escrow', network: `hathor:${network}`, payload: { ncId: id, depositTxId: id, buyerAddress: address } };
+        : { x402Version: 2, scheme: opt.scheme, network: `hathor:${network}`, payload: { ncId: id, depositTxId: id, buyerAddress: address } };
 
       const paidResp = await fetch(url, { mode: 'cors', headers: { 'PAYMENT-SIGNATURE': btoa(JSON.stringify(paymentPayload)) } });
       if (!paidResp.ok) {
@@ -208,7 +215,9 @@ export function X402Fetch() {
       setResourceData(data);
       setStep('done');
       toast.success('Resource received!');
-      addToHistory(opt.scheme, id, opt.price);
+      const charged = data?.payment?.chargedAmount != null ? String(data.payment.chargedAmount) : undefined;
+      const refund = data?.payment?.refundAmount != null ? String(data.payment.refundAmount) : undefined;
+      addToHistory(opt.scheme, id, opt.price, charged, refund);
       refreshBalance('00', network);
     } catch (err: any) {
       setError(err.message);
@@ -232,6 +241,7 @@ export function X402Fetch() {
 
   const amountDisplay = selectedOption ? `${(parseInt(selectedOption.price) / 100).toFixed(2)} HTR` : '';
   const isChannel = selectedOption?.scheme === 'hathor-channel';
+  const isUpto = selectedOption?.scheme === 'hathor-escrow-upto';
 
   return (
     <div className="space-y-6">
@@ -276,6 +286,25 @@ export function X402Fetch() {
             Fetch
           </button>
         </div>
+
+        {/* Preset URLs */}
+        <div className="flex flex-wrap gap-2 mt-3">
+          <span className="text-xs text-slate-500 self-center">Try:</span>
+          <button
+            onClick={() => setUrl('https://api.x402.hathor.dev/weather')}
+            disabled={step !== 'idle' && step !== 'error' && step !== 'done'}
+            className="text-xs px-3 py-1 rounded border border-slate-600 bg-slate-700 text-slate-300 hover:border-amber-500 hover:text-amber-400 transition-colors disabled:opacity-40"
+          >
+            🔒 /weather <span className="text-slate-500">(exact · 1.00 HTR)</span>
+          </button>
+          <button
+            onClick={() => setUrl('https://api.x402.hathor.dev/generate')}
+            disabled={step !== 'idle' && step !== 'error' && step !== 'done'}
+            className="text-xs px-3 py-1 rounded border border-slate-600 bg-slate-700 text-slate-300 hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40"
+          >
+            📊 /generate <span className="text-slate-500">(upto · up to 5.00 HTR)</span>
+          </button>
+        </div>
       </div>
 
       {/* Fetching */}
@@ -300,13 +329,16 @@ export function X402Fetch() {
           <div className="flex gap-2 mb-4">
             {paymentOptions.map((opt, i) => {
               const isCh = opt.scheme === 'hathor-channel';
+              const isUp = opt.scheme === 'hathor-escrow-upto';
+              const label = isCh ? '⚡ Channel' : isUp ? '📊 Upto' : '🔒 Escrow';
+              const sub = isCh ? 'Instant after setup' : isUp ? 'Usage-billed' : 'One-shot per request';
               return (
                 <button key={i} onClick={() => setSelectedOption(opt)}
                   className={`flex-1 px-3 py-3 rounded-lg text-sm border transition-colors text-left ${
                     selectedOption === opt ? 'border-amber-500 bg-amber-500/20 text-amber-400' : 'border-slate-600 bg-slate-700 text-slate-300 hover:border-slate-500'
                   }`}>
-                  <div className="font-medium">{isCh ? '⚡ Channel' : '🔒 Escrow'}</div>
-                  <div className="text-xs mt-1 opacity-70">{isCh ? 'Instant after setup' : 'One-shot per request'}</div>
+                  <div className="font-medium">{label}</div>
+                  <div className="text-xs mt-1 opacity-70">{sub}</div>
                 </button>
               );
             })}
@@ -315,8 +347,8 @@ export function X402Fetch() {
           {/* Details */}
           <div className="bg-slate-900 rounded-lg p-4 space-y-2 mb-4 text-sm">
             <div className="flex justify-between">
-              <span className="text-slate-400">Per request</span>
-              <span className="text-white font-bold">{amountDisplay}</span>
+              <span className="text-slate-400">{isUpto ? 'Max authorized' : 'Per request'}</span>
+              <span className="text-white font-bold">{isUpto ? `up to ${amountDisplay}` : amountDisplay}</span>
             </div>
             {isChannel && (
               <div className="flex justify-between">
@@ -330,8 +362,10 @@ export function X402Fetch() {
             </div>
             <div className="flex justify-between">
               <span className="text-slate-400">After this</span>
-              <span className={isChannel ? 'text-green-400' : 'text-slate-400'}>
-                {isChannel ? 'Next 9 requests are instant' : 'Each request needs a new escrow'}
+              <span className={isChannel ? 'text-green-400' : isUpto ? 'text-blue-400' : 'text-slate-400'}>
+                {isChannel ? 'Next 9 requests are instant'
+                  : isUpto ? 'Server settles actual usage, remainder refunded'
+                  : 'Each request needs a new escrow'}
               </span>
             </div>
           </div>
@@ -342,6 +376,7 @@ export function X402Fetch() {
               style={{ background: isConnected ? 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)' : '#475569', color: '#0f172a' }}>
               {!isConnected ? 'Connect Wallet First'
                 : isChannel ? `Open Channel (${(parseInt(selectedOption.price) * 10 / 100).toFixed(2)} HTR)`
+                : isUpto ? `Authorize up to ${amountDisplay}`
                 : `Pay ${amountDisplay}`}
             </button>
             <button onClick={reset} className="px-4 py-3 rounded-lg text-slate-400 hover:text-white border border-slate-600 transition-colors">Cancel</button>
@@ -383,6 +418,36 @@ export function X402Fetch() {
               {contractId && <p className="text-sm text-slate-400">Via {formatAddress(contractId)}</p>}
             </div>
           </div>
+
+          {/* Upto billing summary */}
+          {resourceData?.payment?.scheme === 'hathor-escrow-upto' && resourceData?.payment?.chargedAmount != null && (
+            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 mb-4">
+              <div className="text-sm font-medium text-blue-400 mb-2">📊 Usage-Based Settlement</div>
+              <div className="space-y-1 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Max authorized</span>
+                  <span className="text-white">{(parseInt(selectedOption?.price || '0') / 100).toFixed(2)} HTR</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Actually charged</span>
+                  <span className="text-amber-400 font-bold">{(parseInt(resourceData.payment.chargedAmount) / 100).toFixed(2)} HTR</span>
+                </div>
+                {resourceData.payment.refundAmount > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Refunded to you</span>
+                    <span className="text-green-400 font-bold">{(parseInt(resourceData.payment.refundAmount) / 100).toFixed(2)} HTR</span>
+                  </div>
+                )}
+                {resourceData.payment.refundTxId && (
+                  <div className="flex justify-between pt-1 border-t border-slate-700">
+                    <span className="text-slate-400">Refund tx</span>
+                    <span className="text-slate-300 font-mono text-xs">{formatAddress(resourceData.payment.refundTxId)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <pre className="bg-slate-900 rounded-lg p-4 text-sm text-slate-300 overflow-x-auto">
             {JSON.stringify(resourceData.data || resourceData, null, 2)}
           </pre>
@@ -406,17 +471,31 @@ export function X402Fetch() {
         <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
           <h3 className="text-lg font-bold text-white mb-4">Payment History</h3>
           <div className="space-y-2">
-            {history.map((e) => (
-              <div key={e.id} className="flex items-center justify-between bg-slate-900 rounded-lg p-3">
-                <div>
-                  <p className="text-white text-sm font-mono">{e.url}</p>
-                  <p className="text-xs text-slate-500">{e.timestamp.toLocaleTimeString()} — {formatAddress(e.contractId)}</p>
+            {history.map((e) => {
+              const badgeClass = e.scheme === 'hathor-channel' ? 'bg-green-500/20 text-green-400'
+                : e.scheme === 'hathor-escrow-upto' ? 'bg-blue-500/20 text-blue-400'
+                : 'bg-amber-500/20 text-amber-400';
+              const badgeLabel = e.scheme === 'hathor-channel' ? 'channel'
+                : e.scheme === 'hathor-escrow-upto' ? 'upto'
+                : 'escrow';
+              return (
+                <div key={e.id} className="flex items-center justify-between bg-slate-900 rounded-lg p-3">
+                  <div>
+                    <p className="text-white text-sm font-mono">{e.url}</p>
+                    <p className="text-xs text-slate-500">
+                      {e.timestamp.toLocaleTimeString()} — {formatAddress(e.contractId)}
+                      {e.chargedAmount != null && (
+                        <span className="ml-2 text-blue-400">
+                          charged {(parseInt(e.chargedAmount) / 100).toFixed(2)} HTR
+                          {e.refundAmount && parseInt(e.refundAmount) > 0 && ` · refunded ${(parseInt(e.refundAmount) / 100).toFixed(2)} HTR`}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <span className={`text-xs px-2 py-1 rounded ${badgeClass}`}>{badgeLabel}</span>
                 </div>
-                <span className={`text-xs px-2 py-1 rounded ${e.scheme === 'hathor-channel' ? 'bg-green-500/20 text-green-400' : 'bg-amber-500/20 text-amber-400'}`}>
-                  {e.scheme === 'hathor-channel' ? 'channel' : 'escrow'}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
