@@ -65,7 +65,98 @@ async function settleEscrow(ncId) {
 
   if (!result.success) return { x402Version: 2, success: false, error: result.message || 'release() failed' };
   // Don't wait for block confirmation — tx is accepted by the node, it will confirm eventually
-  return { x402Version: 2, success: true, txId: result.hash, network: `hathor:${config.network || 'privatenet'}` };
+  return {
+    x402Version: 2,
+    success: true,
+    scheme: 'hathor-escrow',
+    txId: result.hash,
+    chargedAmount: amount,
+    network: `hathor:${config.network || 'privatenet'}`,
+  };
+}
+
+// "upto" scheme: release `chargedAmount` to seller, refund the remainder to buyer.
+// Two on-chain calls:
+//   1. release_upto(chargedAmount) -> withdraws chargedAmount to seller
+//   2. refund()                    -> withdraws remainder to buyer (only if > 0)
+async function settleEscrowUpto(ncId, chargedAmount) {
+  const stateResp = await getNanoContractState(ncId);
+  if (!stateResp.success) return { x402Version: 2, success: false, error: `Cannot query contract` };
+
+  const fields = stateResp.fields;
+  if (fields.phase.value !== 'LOCKED') return { x402Version: 2, success: false, error: `Escrow not locked (phase=${fields.phase.value})` };
+
+  const maxAmount = fields.amount.value;
+  const seller = fields.seller.value;
+  const buyer = fields.buyer.value;
+  const tokenUid = fields.token_uid.value;
+
+  const charged = parseInt(chargedAmount);
+  if (!Number.isFinite(charged) || charged <= 0) {
+    return { x402Version: 2, success: false, error: `Invalid chargedAmount: ${chargedAmount}` };
+  }
+  if (charged > maxAmount) {
+    return { x402Version: 2, success: false, error: `chargedAmount ${charged} exceeds escrow ${maxAmount}` };
+  }
+
+  const refund = maxAmount - charged;
+
+  // Step 1: release_upto(charged) — withdraws charged to seller
+  log('FACILITATOR', `Escrow release_upto(${charged}) — to seller ${seller} (max ${maxAmount}, refund ${refund})`);
+  const releaseResult = await walletRequest('POST', '/wallet/nano-contracts/execute', {
+    nc_id: ncId,
+    method: 'release_upto',
+    address: config.facilitatorAddress,
+    data: {
+      args: [charged],
+      actions: [{ type: 'withdrawal', token: tokenUid, amount: charged, address: seller }],
+    },
+  }, config.facilitatorWalletId);
+
+  if (!releaseResult.success) {
+    return { x402Version: 2, success: false, error: releaseResult.message || 'release_upto() failed' };
+  }
+
+  // Step 2 (only if there is a remainder): refund() — withdraws remainder to buyer
+  let refundTxId = null;
+  if (refund > 0) {
+    log('FACILITATOR', `Escrow refund() — ${refund} of ${tokenUid} to buyer ${buyer}`);
+    const refundResult = await walletRequest('POST', '/wallet/nano-contracts/execute', {
+      nc_id: ncId,
+      method: 'refund',
+      address: config.facilitatorAddress,
+      data: {
+        args: [],
+        actions: [{ type: 'withdrawal', token: tokenUid, amount: refund, address: buyer }],
+      },
+    }, config.facilitatorWalletId);
+    if (!refundResult.success) {
+      // The charge went through but the refund failed. Return partial success so the
+      // seller still gets paid and the buyer can retry the refund later.
+      return {
+        x402Version: 2,
+        success: true,
+        scheme: 'hathor-escrow-upto',
+        txId: releaseResult.hash,
+        chargedAmount: charged,
+        refundAmount: 0,
+        refundError: refundResult.message || 'refund() failed',
+        network: `hathor:${config.network || 'privatenet'}`,
+      };
+    }
+    refundTxId = refundResult.hash;
+  }
+
+  return {
+    x402Version: 2,
+    success: true,
+    scheme: 'hathor-escrow-upto',
+    txId: releaseResult.hash,
+    refundTxId,
+    chargedAmount: charged,
+    refundAmount: refund,
+    network: `hathor:${config.network || 'privatenet'}`,
+  };
 }
 
 // ============================================================================
@@ -144,9 +235,9 @@ app.post('/x402/verify', async (req, res) => {
     return res.json(result);
   }
 
-  // Default: escrow
+  // Default: escrow (both "hathor-escrow" exact and "hathor-escrow-upto" verify against the same contract state)
   const { ncId } = paymentPayload.payload;
-  log('FACILITATOR', `Escrow verify for ncId=${ncId}`);
+  log('FACILITATOR', `Escrow verify for ncId=${ncId} (scheme=${scheme})`);
   const result = await verifyEscrow(ncId, paymentRequirements);
   log('FACILITATOR', `Escrow verify ${result.valid ? 'PASSED' : 'FAILED'}: ${result.invalidReason || 'OK'}`);
   res.json(result);
@@ -167,18 +258,30 @@ app.post('/x402/settle', async (req, res) => {
     return res.json(result);
   }
 
-  // Default: escrow
+  // Escrow (exact or upto)
   const { ncId } = paymentPayload.payload;
-  const cacheKey = `escrow:${ncId}`;
+  const isUpto = scheme === 'hathor-escrow-upto';
+  // Cache key differs between schemes so an exact/upto mismatch can never collide
+  const cacheKey = isUpto ? `escrow-upto:${ncId}` : `escrow:${ncId}`;
 
   // Idempotency: return cached result if already settled
   if (settlementCache.has(cacheKey)) {
-    log('FACILITATOR', `Escrow settle CACHED for ncId=${ncId}`);
+    log('FACILITATOR', `Escrow settle CACHED for ncId=${ncId} (scheme=${scheme})`);
     return res.json(settlementCache.get(cacheKey));
   }
 
-  log('FACILITATOR', `Escrow settle for ncId=${ncId}`);
-  const result = await settleEscrow(ncId);
+  let result;
+  if (isUpto) {
+    const chargedAmount = req.body.chargedAmount ?? paymentPayload.payload.chargedAmount;
+    if (chargedAmount == null) {
+      return res.json({ x402Version: 2, success: false, error: 'chargedAmount required for hathor-escrow-upto' });
+    }
+    log('FACILITATOR', `Escrow-upto settle for ncId=${ncId}, chargedAmount=${chargedAmount}`);
+    result = await settleEscrowUpto(ncId, chargedAmount);
+  } else {
+    log('FACILITATOR', `Escrow settle for ncId=${ncId}`);
+    result = await settleEscrow(ncId);
+  }
   log('FACILITATOR', `Escrow settle ${result.success ? 'SUCCESS' : 'FAILED'}: ${result.txId || result.error}`);
   if (result.success) settlementCache.set(cacheKey, result);
   res.json(result);

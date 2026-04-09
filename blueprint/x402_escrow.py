@@ -47,6 +47,8 @@ class X402Escrow(Blueprint):
 
     @public(allow_withdrawal=True)
     def release(self, ctx: Context) -> None:
+        # Exact release: withdraw the entire escrow amount to the seller.
+        # Used by the "hathor-escrow" (exact) scheme.
         caller = ctx.get_caller_address()
         if caller != self.facilitator:
             raise NCFail("Only the facilitator can release funds")
@@ -60,6 +62,36 @@ class X402Escrow(Blueprint):
             raise NCFail("Withdrawal amount must equal escrow amount")
 
         self.phase = PHASE_RELEASED
+
+    @public(allow_withdrawal=True)
+    def release_upto(self, ctx: Context, charged_amount: Amount) -> None:
+        # Partial release: withdraw `charged_amount` to the seller and leave the
+        # remainder locked so the buyer (or facilitator) can claim it back via
+        # refund(). Used by the "hathor-escrow-upto" scheme.
+        #
+        # After this call, self.amount becomes the remainder. If the remainder
+        # is zero, the phase transitions to RELEASED. Otherwise the phase stays
+        # LOCKED and the remaining amount can be refunded to the buyer using
+        # the existing refund() flow.
+        caller = ctx.get_caller_address()
+        if caller != self.facilitator:
+            raise NCFail("Only the facilitator can release funds")
+        if self.phase != PHASE_LOCKED:
+            raise NCFail("Escrow is not locked")
+        if charged_amount <= 0:
+            raise NCFail("charged_amount must be positive")
+        if charged_amount > self.amount:
+            raise NCFail("charged_amount exceeds escrow amount")
+
+        action = ctx.get_single_action(self.token_uid)
+        if not isinstance(action, NCWithdrawalAction):
+            raise NCFail("Must include a withdrawal action")
+        if action.amount != charged_amount:
+            raise NCFail("Withdrawal amount must equal charged_amount")
+
+        self.amount = self.amount - charged_amount
+        if self.amount == 0:
+            self.phase = PHASE_RELEASED
 
     @public(allow_withdrawal=True)
     def refund(self, ctx: Context) -> None:
