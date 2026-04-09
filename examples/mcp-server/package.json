@@ -1,0 +1,17 @@
+{
+  "name": "x402-mcp-server-example",
+  "version": "0.1.0",
+  "description": "Example MCP server with x402 payment-gated tools on Hathor Network",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
