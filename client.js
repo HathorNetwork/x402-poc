@@ -19,6 +19,18 @@ const { walletRequest, waitForTxConfirmation, log } = require('./helpers');
 const tokenArg = process.argv.find(a => a.startsWith('--token='))?.split('=')[1]
   || (process.argv.includes('--token') ? process.argv[process.argv.indexOf('--token') + 1] : null);
 
+function decodePaymentResponseHeader(resp) {
+  const encoded = resp.headers.get('PAYMENT-RESPONSE') || resp.headers.get('X-Payment-Response');
+  if (!encoded) return null;
+
+  try {
+    return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+  } catch (err) {
+    log('CLIENT', `Could not decode PAYMENT-RESPONSE header: ${err.message}`);
+    return null;
+  }
+}
+
 function pickPaymentOption(accepts) {
   if (tokenArg === 'custom' && config.customTokenUid) {
     const match = accepts.find(a => a.asset === config.customTokenUid);
@@ -130,11 +142,13 @@ async function main() {
   }
 
   const result = await paidResp.json();
+  const paymentResponse = decodePaymentResponseHeader(paidResp) || result.payment;
   log('CLIENT', '');
   log('CLIENT', '=== Resource Received! ===');
   log('CLIENT', JSON.stringify(result.data, null, 2));
   log('CLIENT', '');
-  log('CLIENT', `Payment ncId: ${result.payment.ncId}`);
+  log('CLIENT', `Payment ncId: ${paymentResponse?.ncId || result.payment?.ncId}`);
+  log('CLIENT', `Settlement txId: ${paymentResponse?.settleTxId || 'not provided'}`);
   log('CLIENT', '');
   log('CLIENT', 'Waiting a few seconds for settlement to complete...');
 

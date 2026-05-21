@@ -36,6 +36,19 @@ interface PaymentHistory {
   timestamp: Date;
 }
 
+interface PaymentResponse {
+  success?: boolean;
+  scheme?: string;
+  network?: string;
+  ncId?: string;
+  channelId?: string;
+  settleTxId?: string;
+  chargedAmount?: string | number;
+  refundAmount?: string | number;
+  refundTxId?: string;
+  [key: string]: unknown;
+}
+
 type Step = 'idle' | 'fetching' | 'got402' | 'creating' | 'waiting_confirmation' | 'retrying' | 'done' | 'error';
 
 const CHANNEL_STORAGE_KEY = 'x402_active_channel';
@@ -51,6 +64,21 @@ function storeChannel(channelId: string) {
 
 function clearStoredChannel() {
   localStorage.removeItem(CHANNEL_STORAGE_KEY);
+}
+
+function decodePaymentResponseHeader(resp: Response): PaymentResponse | null {
+  const encoded = resp.headers.get('PAYMENT-RESPONSE') || resp.headers.get('X-Payment-Response');
+  if (!encoded) return null;
+
+  try {
+    return JSON.parse(atob(encoded));
+  } catch {
+    return null;
+  }
+}
+
+function readPaymentResponse(resp: Response, body: any): PaymentResponse | null {
+  return decodePaymentResponseHeader(resp) || body?.payment || null;
 }
 
 export function X402Fetch() {
@@ -93,7 +121,8 @@ export function X402Fetch() {
     if (!resp.ok) return false;
 
     const data = await resp.json();
-    setResourceData(data);
+    const payment = readPaymentResponse(resp, data);
+    setResourceData(payment ? { ...data, payment } : data);
     setContractId(channelId);
     setStep('done');
     addToHistory('hathor-channel', channelId, '100');
@@ -212,11 +241,12 @@ export function X402Fetch() {
       }
 
       const data = await paidResp.json();
-      setResourceData(data);
+      const payment = readPaymentResponse(paidResp, data);
+      setResourceData(payment ? { ...data, payment } : data);
       setStep('done');
       toast.success('Resource received!');
-      const charged = data?.payment?.chargedAmount != null ? String(data.payment.chargedAmount) : undefined;
-      const refund = data?.payment?.refundAmount != null ? String(data.payment.refundAmount) : undefined;
+      const charged = payment?.chargedAmount != null ? String(payment.chargedAmount) : undefined;
+      const refund = payment?.refundAmount != null ? String(payment.refundAmount) : undefined;
       addToHistory(opt.scheme, id, opt.price, charged, refund);
       refreshBalance('00', network);
     } catch (err: any) {
