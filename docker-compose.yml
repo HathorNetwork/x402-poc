@@ -47,7 +47,7 @@ services:
     ports:
       - "${RESOURCE_SERVER_HOST_PORT:-3000}:3000"
     volumes:
-      - ./data:/app/data
+      - x402_data:/app/data
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health',r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))"]
       interval: 10s
@@ -75,7 +75,7 @@ services:
     ports:
       - "${FACILITATOR_HOST_PORT:-8402}:8402"
     volumes:
-      - ./data:/app/data
+      - x402_data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8402/health"]
       interval: 10s
@@ -104,3 +104,10 @@ services:
     depends_on:
       resource-server:
         condition: service_healthy
+
+# Docker-managed named volume for the verifier's dedup ledger + blocklist
+# (SQLite at /app/data/payments.sqlite). Both `resource-server` and the
+# optional `facilitator` share it. Persists across container recreations
+# and across Dokploy redeploys.
+volumes:
+  x402_data:
