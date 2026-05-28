@@ -77,7 +77,7 @@ function describeScheme(scheme: string) {
 // --- component -------------------------------------------------------------
 
 export function X402Fetch() {
-  const { sendTransaction, signWithAddress, getUtxos, address, refreshBalance } = useWallet();
+  const { sendTransaction, signWithAddress, getUtxos, address } = useWallet();
   const { network, isConnected } = useHathor();
 
   const [url, setUrl] = useState(config.defaultDemoUrl);
@@ -136,7 +136,13 @@ export function X402Fetch() {
       // input address in the resulting tx is address-0, and signing with
       // addressIndex: 0 produces a signature the verifier accepts.
       const PAYER_INDEX = 0;
-      const payerAddress = address!;
+      // Address-0 is what WalletConnect shares at session approval
+      // (hathor-wallet/src/sagas/reown.js:184 derives `getAddressAtIndex(0)`),
+      // so the connected address is address-0 by definition. We use it both
+      // as the FROM (filter UTXOs to spend) and as the change recipient so
+      // address-0 keeps being funded for subsequent payments.
+      if (!address) throw new Error('Wallet not connected');
+      const payerAddress = address;
       const amount = parseInt(String(opt.amount).replace(/[^0-9]/g, ''), 10);
 
       // Step 1: list the connected address's UTXOs (asset-filtered).
@@ -180,7 +186,10 @@ export function X402Fetch() {
         network,
         outputs: [sendOutput],
         inputs: chosen.map((u) => ({ txId: u.tx_id, index: u.index })),
-        changeAddress: payerAddress, // consolidate change back to address-0
+        // ALWAYS route change to address-0 so it stays funded for future
+        // payments. Otherwise the wallet defaults change to its
+        // `first_empty` address and address-0 slowly drains.
+        changeAddress: payerAddress,
         push_tx: true,
       });
       const sentTxId = HathorRPCService.extractTxId(sendResp);
@@ -266,7 +275,10 @@ export function X402Fetch() {
 
       setStep('done');
       toast.success('Resource received!');
-      refreshBalance('00', network);
+      // Intentionally NOT calling refreshBalance here — htr_getBalance
+      // prompts the wallet on some adapters, which is noisy right after the
+      // user just signed twice. The user can hit "Load Balance" on the
+      // BalanceCard explicitly if they want a fresh number.
     } catch (err: any) {
       setError(err.message);
       setStep('error');
