@@ -52,6 +52,8 @@ function buildAccept(req, routeConfig) {
 
   // Mint a fresh, server-issued challenge token. The HMAC commitments include
   // the route, amount, and payTo so a payment claim later can't be redirected.
+  // config.serverSecret always has a value (env or fixed dev fallback) so
+  // mint+verify use the same key.
   const requestId = mintRequestId(
     {
       route: resourceUrl,
@@ -60,7 +62,7 @@ function buildAccept(req, routeConfig) {
       asset: config.htrTokenUid,
       network: networkId(),
     },
-    config.serverSecret || 'dev-fallback-secret',
+    config.serverSecret,
     config.requestIdTtlSeconds
   );
 

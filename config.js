@@ -33,9 +33,11 @@ module.exports = {
   sellerWalletUrl: env.SELLER_WALLET_URL || 'http://wallet-headless:8000',
   sellerWalletId: env.SELLER_WALLET_ID || 'seller',
 
-  // Server secret used to HMAC requestIds. Falls back to an ephemeral random
-  // value with a warning at startup if unset — fine for local dev, not for prod.
-  serverSecret: env.SERVER_SECRET || '',
+  // Server secret used to HMAC requestIds. If unset we fall back to a fixed
+  // string so mint+verify use the same key (otherwise empty=='' on verify
+  // wouldn't match the fallback used at mint, causing silent bad_request_id_mac
+  // failures). Set SERVER_SECRET in prod — startup logs a clear warning otherwise.
+  serverSecret: env.SERVER_SECRET || 'x402-poc-dev-secret-do-not-use-in-prod',
   requestIdTtlSeconds: int(env.REQUEST_ID_TTL_SECONDS, 120),
 
   // Dedup + blocklist store (better-sqlite3 file).
