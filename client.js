@@ -1,152 +1,176 @@
-// x402 Client (Buyer / AI Agent)
-// Demonstrates the full x402 payment flow:
-// 1. Request resource -> get 402
-// 2. Pick a payment option from the accepts array
-// 3. Create escrow nano contract (deposit funds)
-// 4. Retry request with payment proof
-// 5. Receive resource
+// x402 buyer CLI — non-browser smoke test for the hathor-direct flow.
+//
+// Uses @hathor/wallet-lib directly (no wallet-headless dependency) because:
+//   1. We need wallet.signMessageWithAddress(), which the headless HTTP API
+//      doesn't expose today.
+//   2. A single-process CLI is the simplest "agent making a paid request".
 //
 // Usage:
-//   node client.js              # pay with first accepted token (HTR)
-//   node client.js --token htr  # pay with HTR explicitly
-//   node client.js --token custom # pay with the custom token (e.g. hUSDC)
+//   BUYER_SEED='abandon abandon ...' node client.js [--route weather|generate]
+//   BUYER_SEED='...' node client.js --url http://localhost:3000/weather
+//
+// Requires the buyer wallet to be funded on the configured network (testnet
+// faucet is sufficient).
 
-const fetch = require('node-fetch');
+'use strict';
+
 const config = require('./config');
-const { walletRequest, waitForTxConfirmation, log } = require('./helpers');
+const { log } = require('./helpers');
 
-// Parse --token arg
-const tokenArg = process.argv.find(a => a.startsWith('--token='))?.split('=')[1]
-  || (process.argv.includes('--token') ? process.argv[process.argv.indexOf('--token') + 1] : null);
+const hathorLib = require('@hathor/wallet-lib');
+const { HathorWallet, Network } = hathorLib;
 
-function pickPaymentOption(accepts) {
-  if (tokenArg === 'custom' && config.customTokenUid) {
-    const match = accepts.find(a => a.asset === config.customTokenUid);
-    if (match) return match;
-    log('CLIENT', `Custom token ${config.customTokenUid} not accepted, falling back`);
+// --- args -------------------------------------------------------------------
+
+function parseArgs(argv) {
+  const out = { route: 'weather', url: null };
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--route') out.route = argv[++i];
+    else if (a.startsWith('--route=')) out.route = a.split('=')[1];
+    else if (a === '--url') out.url = argv[++i];
+    else if (a.startsWith('--url=')) out.url = a.split('=')[1];
   }
-  if (tokenArg === 'htr') {
-    const match = accepts.find(a => a.asset === '00');
-    if (match) return match;
-  }
-  // Default: pick first option
-  return accepts[0];
+  return out;
 }
 
-async function main() {
-  log('CLIENT', '=== x402 Payment Flow Demo ===');
-  log('CLIENT', `Buyer address: ${config.buyerAddress}`);
-  log('CLIENT', '');
+const args = parseArgs(process.argv);
+const url = args.url || `http://localhost:${config.resourceServerPort}/${args.route}`;
 
-  // Step 1: Request the paid resource (expect 402)
-  log('CLIENT', 'Step 1: Requesting weather data...');
-  const initialResp = await fetch(`http://localhost:${config.resourceServerPort}/weather`);
+if (!process.env.BUYER_SEED) {
+  log('CLIENT', 'BUYER_SEED is required. Export a 24-word seed.');
+  process.exit(1);
+}
 
-  if (initialResp.status !== 402) {
-    log('CLIENT', `Expected 402 but got ${initialResp.status}`);
-    process.exit(1);
-  }
+// --- wallet bootstrap -------------------------------------------------------
 
-  const paymentRequired = await initialResp.json();
-  log('CLIENT', `Got 402 Payment Required`);
-  log('CLIENT', `  ${paymentRequired.accepts.length} payment option(s) available:`);
-  for (const opt of paymentRequired.accepts) {
-    log('CLIENT', `    - ${opt.description} (asset: ${opt.asset}, price: ${opt.price})`);
-  }
-  log('CLIENT', '');
+async function startWallet() {
+  log('CLIENT', `Starting wallet on ${config.network} (this can take a moment to sync)...`);
 
-  // Step 2: Pick a payment option
-  const chosen = pickPaymentOption(paymentRequired.accepts);
-  log('CLIENT', `Step 2: Chose payment option: ${chosen.description}`);
-  log('CLIENT', `  Asset: ${chosen.asset}`);
-  log('CLIENT', `  Price: ${chosen.price}`);
-  log('CLIENT', `  Pay to: ${chosen.payTo}`);
-  log('CLIENT', `  Facilitator: ${chosen.extra.facilitatorAddress}`);
-  log('CLIENT', '');
-
-  // Step 3: Create escrow nano contract (deposit funds)
-  log('CLIENT', 'Step 3: Creating escrow nano contract...');
-
-  const deadline = Math.floor(Date.now() / 1000) + chosen.extra.deadlineSeconds;
-  const amount = parseInt(chosen.price);
-
-  const createResult = await walletRequest('POST', '/wallet/nano-contracts/create', {
-    blueprint_id: chosen.extra.blueprintId,
-    address: config.buyerAddress,
-    data: {
-      args: [
-        chosen.payTo,                        // seller
-        chosen.extra.facilitatorAddress,      // facilitator
-        chosen.asset,                        // token_uid
-        deadline,                            // deadline
-        chosen.resource,                     // resource_url
-        'poc-request-hash',                  // request_hash
-      ],
-      actions: [{
-        type: 'deposit',
-        token: chosen.asset,
-        amount: amount,
-      }],
-    },
-  }, config.buyerWalletId);
-
-  if (!createResult.success) {
-    log('CLIENT', `Failed to create escrow: ${JSON.stringify(createResult)}`);
-    process.exit(1);
-  }
-
-  const ncId = createResult.hash;
-  log('CLIENT', `Escrow created! ncId=${ncId}`);
-  log('CLIENT', 'Waiting for tx confirmation...');
-
-  await waitForTxConfirmation(ncId);
-  log('CLIENT', 'Escrow tx confirmed on-chain');
-  log('CLIENT', '');
-
-  // Step 4: Retry request with payment proof
-  log('CLIENT', 'Step 4: Retrying request with payment proof...');
-
-  const paymentPayload = {
-    x402Version: 2,
-    scheme: 'hathor-escrow',
-    network: `hathor:${config.network}`,
-    payload: {
-      ncId: ncId,
-      depositTxId: ncId,
-      buyerAddress: config.buyerAddress,
-    },
-  };
-
-  const paidResp = await fetch(`http://localhost:${config.resourceServerPort}/weather`, {
-    headers: {
-      'PAYMENT-SIGNATURE': Buffer.from(JSON.stringify(paymentPayload)).toString('base64'),
-    },
+  const network = new Network(config.network);
+  const wallet = new HathorWallet({
+    seed: process.env.BUYER_SEED,
+    server: `${config.fullnodeUrl}/v1a/`,
+    network,
+    pinCode: '000000',          // local-only POC PIN
+    password: 'x402-poc',       // protects in-memory key material
   });
 
-  if (paidResp.status !== 200) {
-    const err = await paidResp.json();
-    log('CLIENT', `Payment rejected: ${JSON.stringify(err)}`);
-    process.exit(1);
+  await wallet.start({ pinCode: '000000', password: 'x402-poc' });
+
+  // Wait until READY (state 3). The lib polls history; on a quiet wallet this
+  // is sub-second, on a heavily used one it can take longer.
+  const start = Date.now();
+  while (true) {
+    const ready = wallet.isReady?.() ?? (wallet.state === 3);
+    if (ready) break;
+    if (Date.now() - start > 120_000) throw new Error('wallet failed to reach READY in 120s');
+    await new Promise((r) => setTimeout(r, 500));
   }
 
-  const result = await paidResp.json();
-  log('CLIENT', '');
-  log('CLIENT', '=== Resource Received! ===');
-  log('CLIENT', JSON.stringify(result.data, null, 2));
-  log('CLIENT', '');
-  log('CLIENT', `Payment ncId: ${result.payment.ncId}`);
-  log('CLIENT', '');
-  log('CLIENT', 'Waiting a few seconds for settlement to complete...');
-
-  // Give the async settlement time to complete
-  await new Promise(r => setTimeout(r, 15000));
-
-  log('CLIENT', '');
-  log('CLIENT', '=== x402 Payment Flow Complete ===');
+  log('CLIENT', 'Wallet READY.');
+  return wallet;
 }
 
-main().catch(err => {
-  log('CLIENT', `Error: ${err.message}`);
+// --- 402 + payment flow -----------------------------------------------------
+
+async function fetch402() {
+  const resp = await fetch(url);
+  if (resp.status !== 402) {
+    throw new Error(`expected 402, got ${resp.status}`);
+  }
+  const body = await resp.json();
+  if (!body.accepts || !body.accepts.length) throw new Error('no accepts in 402 body');
+  return body.accepts[0];
+}
+
+async function pay(wallet, accept) {
+  const buyer = await wallet.getCurrentAddress({ markAsUsed: false });
+  log('CLIENT', `Buyer address: ${buyer.address} (index ${buyer.index})`);
+
+  log('CLIENT', `Paying ${(parseInt(accept.amount, 10) / 100).toFixed(2)} ${accept.asset === '00' ? 'HTR' : accept.asset} → ${accept.payTo}`);
+
+  const sendTx = await wallet.sendManyOutputsSendTransaction(
+    [
+      {
+        address: accept.payTo,
+        value: parseInt(accept.amount, 10),
+        token: accept.asset || '00',
+      },
+    ],
+    {
+      changeAddress: buyer.address,
+      pinCode: '000000',
+    }
+  );
+  const tx = await sendTx.run();
+  const txId = tx?.hash || tx?.txId;
+  if (!txId) throw new Error('no txId returned from sendTransaction');
+  log('CLIENT', `Broadcast tx ${txId}`);
+
+  log('CLIENT', `Signing requestId with address index ${buyer.index} ...`);
+  const signature = await wallet.signMessageWithAddress(
+    accept.extra.requestId,
+    buyer.index,
+    '000000'
+  );
+
+  return { txId, payerAddress: buyer.address, signature };
+}
+
+async function retry(accept, { txId, payerAddress, signature }) {
+  const payload = {
+    x402Version: 2,
+    scheme: accept.scheme,
+    network: accept.network,
+    payload: {
+      txId,
+      payerAddress,
+      signature,
+      requestId: accept.extra.requestId,
+    },
+  };
+  const headerB64 = Buffer.from(JSON.stringify(payload)).toString('base64');
+
+  log('CLIENT', 'Retrying GET with PAYMENT-SIGNATURE ...');
+  const resp = await fetch(url, { headers: { 'PAYMENT-SIGNATURE': headerB64 } });
+  const body = await resp.json();
+  if (!resp.ok) {
+    throw new Error(`server rejected payment: ${JSON.stringify(body)}`);
+  }
+  return body;
+}
+
+// --- main -------------------------------------------------------------------
+
+async function main() {
+  log('CLIENT', `=== x402 hathor-direct demo — route=${args.route} ===`);
+  log('CLIENT', `Target URL: ${url}`);
+
+  const wallet = await startWallet();
+  try {
+    const accept = await fetch402();
+    log('CLIENT', `402 received — scheme=${accept.scheme} amount=${accept.amount}`);
+
+    const proof = await pay(wallet, accept);
+    const result = await retry(accept, proof);
+
+    log('CLIENT', '');
+    log('CLIENT', '=== resource ===');
+    log('CLIENT', JSON.stringify(result.data, null, 2));
+    log('CLIENT', '');
+    if (result.payment) {
+      log('CLIENT', '=== payment ===');
+      log('CLIENT', JSON.stringify(result.payment, null, 2));
+    }
+  } finally {
+    try { await wallet.stop(); } catch (_) { /* ignore */ }
+  }
+}
+
+main().catch((err) => {
+  log('CLIENT', `ERROR: ${err.message}`);
+  // eslint-disable-next-line no-console
   console.error(err);
   process.exit(1);
 });

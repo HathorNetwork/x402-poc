@@ -185,9 +185,11 @@ export function WalletConnectProvider({ children }: { children: ReactNode | Reac
             methods: [
               'htr_getAddress',
               'htr_getBalance',
+              'htr_getConnectedNetwork',
+              'htr_getWalletInformation',
               'htr_getUtxos',
               'htr_signWithAddress',
-              'htr_sendNanoContractTx',
+              'htr_sendTransaction',
             ],
             chains: [`hathor:${dappNetwork}`],
             events: [],

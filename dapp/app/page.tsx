@@ -16,14 +16,14 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-slate-900">
-      <Header appName="x402 Client" selectedToken="HTR" onTokenChange={() => {}} />
+      <Header appName="x402 Client" />
 
       <main className="container mx-auto px-6 py-8 max-w-4xl">
         {/* Hero */}
         <div className="mb-8 text-center">
           <h2 className="text-4xl font-bold text-white mb-3">x402 Payment Client</h2>
           <p className="text-slate-400 text-lg">
-            Access paid HTTP APIs on Hathor Network. Enter a URL, pay with your wallet, get the data.
+            Access paid HTTP APIs on Hathor Network — regular UTXO payments, no nano contracts.
           </p>
         </div>
 
@@ -39,7 +39,7 @@ export default function Home() {
                   <span className="text-slate-500 ml-2">({network})</span>
                 </div>
               </div>
-              <BalanceCard selectedToken="HTR" />
+              <BalanceCard />
             </>
           ) : (
             <>
@@ -50,7 +50,11 @@ export default function Home() {
               <button
                 onClick={() => setShowWalletModal(true)}
                 className="px-5 py-2 rounded-lg font-medium text-sm transition-colors hover:opacity-90"
-                style={{ background: 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)', color: '#0f172a' }}
+                style={{
+                  background:
+                    'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)',
+                  color: '#0f172a',
+                }}
               >
                 Connect Wallet
               </button>
@@ -58,21 +62,23 @@ export default function Home() {
           )}
         </div>
 
-        {/* x402 Fetch Flow */}
+        {/* Main flow */}
         <X402Fetch />
 
         {/* How it works */}
         <div className="mt-8 bg-slate-800 rounded-xl border border-slate-700 p-6">
-          <h3 className="text-lg font-bold text-white mb-4">How x402 Works</h3>
+          <h3 className="text-lg font-bold text-white mb-4">How x402 hathor-direct works</h3>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-center">
             {[
               { step: '1', title: 'Fetch', desc: 'Request a paid API endpoint' },
               { step: '2', title: '402', desc: 'Server responds with payment requirements' },
-              { step: '3', title: 'Pay', desc: 'Deposit funds into an escrow contract' },
-              { step: '4', title: 'Access', desc: 'Retry with proof — get the data' },
+              { step: '3', title: 'Pay + Sign', desc: 'Send tx + sign the request id with your key' },
+              { step: '4', title: 'Access', desc: 'Retry with the proof — get the data' },
             ].map(({ step, title, desc }) => (
               <div key={step} className="p-3">
-                <div className="w-8 h-8 rounded-full bg-amber-500 text-slate-900 font-bold flex items-center justify-center mx-auto mb-2">{step}</div>
+                <div className="w-8 h-8 rounded-full bg-amber-500 text-slate-900 font-bold flex items-center justify-center mx-auto mb-2">
+                  {step}
+                </div>
                 <p className="text-white font-medium">{title}</p>
                 <p className="text-xs text-slate-400">{desc}</p>
               </div>
@@ -81,10 +87,7 @@ export default function Home() {
         </div>
       </main>
 
-      <WalletConnectionModal
-        open={showWalletModal}
-        onOpenChange={setShowWalletModal}
-      />
+      <WalletConnectionModal open={showWalletModal} onOpenChange={setShowWalletModal} />
     </div>
   );
 }

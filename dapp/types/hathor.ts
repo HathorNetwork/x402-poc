@@ -1,51 +1,5 @@
-export interface ContractState {
-  token_uid: string;
-  available_tokens: bigint;
-  total_liquidity_provided: bigint;
-  [key: string]: any;
-}
-
-export interface EscrowState {
-  ncId: string;
-  buyer: string;
-  seller: string;
-  facilitator: string;
-  token_uid: string;
-  amount: number;
-  phase: 'LOCKED' | 'RELEASED' | 'REFUNDED';
-  deadline: number;
-  resource_url: string;
-  request_hash: string;
-}
-
-export interface BlueprintInfo {
-  id: string;
-  name: string;
-  public_methods: string[];
-  attributes: Record<string, string>;
-}
-
-export interface ContractHistory {
-  transactions: ContractTransaction[];
-  total: number;
-  hasMore: boolean;
-}
-
-export interface NanoContractEvent {
-  data: string;
-}
-
-export interface ContractTransaction {
-  tx_id: string;
-  timestamp: number;
-  nc_method: string;
-  nc_caller: string;
-  first_block: string | null;
-  is_voided: boolean;
-  nc_args_decoded?: number[];
-  nc_events?: NanoContractEvent[];
-  contractId?: string;
-}
+// dApp types for x402 hathor-direct flow. No nano-contract types — those went
+// away with the blueprint redesign.
 
 export interface HathorRPCRequest {
   method: string;
@@ -73,19 +27,91 @@ export interface GetAddressParams {
   index?: number;
 }
 
-export interface SendNanoContractTxParams {
-  method: string;
-  blueprint_id?: string;
-  nc_id?: string;
-  actions: NanoContractAction[];
-  args: any[];
+// --- htr_sendTransaction -----------------------------------------------------
+
+export interface SendTransactionOutput {
+  address?: string;
+  // The RPC schema requires a digit string (z.string().regex(/^\d+$/)),
+  // not a number — see hathor-rpc-handler/src/rpcMethods/sendTransaction.ts:59.
+  value?: string;
+  token?: string;
+  timelock?: number;
+  // OP_RETURN-style data output (we don't use this for hathor-direct but the
+  // RPC supports it).
+  type?: 'data';
+  data?: string;
+}
+
+export interface SendTransactionInput {
+  txId: string;
+  index: number;
+}
+
+export interface SendTransactionParams {
+  network: string;
+  outputs: SendTransactionOutput[];
+  inputs?: SendTransactionInput[];
+  changeAddress?: string;
   push_tx: boolean;
 }
 
-export interface NanoContractAction {
-  type: 'deposit' | 'withdrawal';
-  amount: string;
-  token: string;
-  address?: string;
-  changeAddress?: string;
+// The RPC's response shape varies a bit across wallets (some return a flat
+// `hash`, some wrap in `response: { hash }`). We type the union and the
+// service helper picks the right field.
+export interface SendTransactionResponse {
+  hash?: string;
+  txId?: string;
+  response?: {
+    hash?: string;
+    response?: { hash?: string };
+  };
+  success?: boolean;
+}
+
+// --- htr_getUtxos ------------------------------------------------------------
+
+export interface GetUtxosParams {
+  network: string;
+  maxUtxos?: number;
+  token?: string;
+  filterAddress?: string;
+  authorities?: number;
+  amountSmallerThan?: number;
+  amountBiggerThan?: number;
+  maximumAmount?: number;
+  onlyAvailableUtxos?: boolean;
+}
+
+export interface UtxoInfo {
+  address: string;
+  amount: string | number | bigint;
+  tx_id: string;
+  index: number;
+  locked: boolean;
+}
+
+export interface UtxoDetails {
+  total_amount_available: string | number | bigint;
+  total_utxos_available: string | number | bigint;
+  total_amount_locked: string | number | bigint;
+  total_utxos_locked: string | number | bigint;
+  utxos: UtxoInfo[];
+}
+
+// --- htr_signWithAddress -----------------------------------------------------
+
+export interface SignWithAddressParams {
+  network: string;
+  message: string;
+  addressIndex: number;
+}
+
+export interface SignWithAddressResponse {
+  message: string;
+  signature: string;
+  address: {
+    address: string;
+    index: number;
+    addressPath: string;
+  };
 }

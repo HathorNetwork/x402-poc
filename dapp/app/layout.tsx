@@ -8,8 +8,8 @@ import { ToastProvider, Toaster } from '@/lib/toast';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'x402 Escrow Manager',
-  description: 'Manage x402 payment escrows on Hathor Network',
+  title: 'x402 Client — Hathor',
+  description: 'x402 hathor-direct payment client (regular UTXO payments, no nano contracts)',
   icons: {
     icon: '/images/icon.png',
   },

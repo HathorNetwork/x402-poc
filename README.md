@@ -1,274 +1,166 @@
-# x402 Payment Protocol POC for Hathor Network
+# x402 Payment Protocol PoC for Hathor Network
 
-> Machines paying machines. HTTP 402 meets nano contract escrow.
+> Machines paying machines, settled on Hathor with regular UTXO payments.
+> No nano contracts, no escrow blueprint, no facilitator hot wallet.
 
-This is a proof-of-concept implementation of the [x402 protocol](https://www.x402.org/) on [Hathor Network](https://hathor.network/). It enables pay-per-request HTTP APIs settled natively on Hathor's DAG-based L1 blockchain using **nano contract escrow**.
+This is a proof-of-concept implementation of the [x402 protocol](https://www.x402.org/)
+on [Hathor Network](https://hathor.network/) using the **`hathor-direct`** scheme: the
+client makes an ordinary "send tokens" transaction to the seller, signs a server-issued
+challenge with its payer key, and the server verifies the on-chain payment + signature
+read-only.
+
+See the full design rationale (with the rejected nano-contract design and the
+fair-exchange / trust analysis) in
+[`../x402-hathor-no-nc-proposal.md`](../x402-hathor-no-nc-proposal.md).
 
 ## What is x402?
 
-[x402](https://www.x402.org/) is an open protocol that repurposes the HTTP `402 Payment Required` status code for machine-to-machine payments. When a client requests a paid resource, the server returns a `402` with payment instructions. The client pays, retries the request with proof of payment, and gets the resource. No API keys, no billing accounts, no human interaction.
+[x402](https://www.x402.org/) repurposes the HTTP `402 Payment Required` status code
+for machine-to-machine payments: a client requests a paid resource, the server returns
+a 402 with payment requirements, the client pays, retries the request with proof, and
+gets the resource. The client is always code — an AI agent, a script, a backend
+service. Never a human clicking buttons.
 
-The client is always code — an AI agent, a script, a backend service. Never a human clicking buttons.
-
-## How Hathor does it: one escrow per request
-
-On EVM chains (Base, Polygon), x402 payments use signed messages — the client signs an authorization off-chain, and the facilitator submits it on-chain in one step. Simple, but it relies on nonces and trust.
-
-**Hathor takes a different approach: on-chain escrow.**
-
-Every x402 payment creates a **new nano contract instance** from the [X402Escrow blueprint](blueprint/x402_escrow.py). Here's what that means concretely:
-
-1. The `X402Escrow` blueprint is published on-chain once (like a class definition)
-2. Each payment **instantiates** a new contract from that blueprint (like creating an object)
-3. The client deposits funds into this new contract — they're locked on-chain
-4. The facilitator verifies the lock, the server delivers the resource
-5. The facilitator calls `release()` on the contract — funds go to the seller
-
-So if an AI agent makes 10 API calls, there are **10 separate escrow contracts** on the Hathor DAG. Each one:
-
-- Has its own contract ID (`ncId`) which doubles as the payment receipt
-- Holds its own funds, independently locked
-- Has its own deadline (auto-refund if the facilitator disappears)
-- Can be verified by anyone — just query the contract state on any full node
-- Cannot be double-spent — the funds are locked in the contract, not in a UTXO
+## How Hathor does it (this PoC)
 
 ```
- Blueprint (published once)          Instances (one per payment)
-┌──────────────────────────┐
-│     X402Escrow           │        ┌─────────────┐
-│                          │───────▶│ Payment #1  │  LOCKED → RELEASED
-│  initialize()            │        │ 1.00 HTR    │
-│  release()               │        └─────────────┘
-│  refund()                │        ┌─────────────┐
-│                          │───────▶│ Payment #2  │  LOCKED → RELEASED
-│                          │        │ 1.00 HTR    │
-└──────────────────────────┘        └─────────────┘
-                                    ┌─────────────┐
-                               ────▶│ Payment #3  │  LOCKED → REFUNDED
-                                    │ 5.00 hUSDC  │  (buyer cancelled)
-                                    └─────────────┘
+┌──────────────┐          ┌──────────────────────────┐          ┌─────────────────┐
+│   dApp /     │──fetch──▶│   resource-server        │──read───▶│ Hathor fullnode │
+│   agent      │          │   verifier.js +          │          │ (testnet/etc.)  │
+│              │          │   dedupStore +           │          └─────────────────┘
+│ htr_sendTx   │          │   voidWatcher +          │                  ▲
+│ htr_signWith │          │   (refundIssuer for      │                  │
+│  Address     │          │    the upto scheme)      │                  │
+└──────┬───────┘          └──────────┬───────────────┘                  │
+       │                             │ POST /wallet/send-tx (refund only)
+       ▼                             ▼
+   Hathor wallet               wallet-headless (seller refund wallet)
+   (desktop / mobile /
+    MetaMask snap)
 ```
 
-### Why not pre-signed transactions?
+Two on-chain transactions in the worst case:
 
-The naive approach for UTXO chains is pre-signed transactions: the client signs a tx offline and hands it to the facilitator. But the client can **double-spend those UTXOs** before the facilitator broadcasts. On EVM this is solved by nonces; Hathor doesn't have nonces. Nano contract escrow solves it completely — funds are locked on-chain the moment the client deposits.
+1. **Client → seller**: a plain `sendTransaction` paying `amount` to `payTo`.
+   This is the *only* tx for `hathor-direct` (exact).
+2. **Seller → client** (upto only): a refund tx for `amount - chargedAmount`,
+   issued by the seller's wallet-headless after the route handler reports
+   actual usage.
 
-|                    | Pre-Signed TX                           | Nano Contract Escrow                        |
-| ------------------ | --------------------------------------- | ------------------------------------------- |
-| Double-spend risk  | **High** — client can spend UTXOs       | **Zero** — funds locked on-chain            |
-| Verification       | Off-chain signature check               | **On-chain state query** — trustless        |
-| Refund on timeout  | Impossible without timelock hacks       | **Built-in** — contract refunds             |
-| Trust model        | Must trust facilitator won't hold tx    | **Trustless** — contract enforces rules     |
+The server (or an optional facilitator wrapper) is purely read-only against the
+fullnode:
 
-## The escrow lifecycle
+- Verify the on-chain payment (correct `payTo`, `amount`, asset, not voided).
+- Verify the payer signature over the server-issued `requestId`.
+- Atomically dedup against the SQLite ledger so the same payment can't be replayed.
+- Kick off a void-watcher for zero-conf payments; double-spending payers get
+  blocklisted.
 
-Each escrow contract goes through exactly one of two paths:
+## Schemes
 
-```
-                    ┌─────────────────────────────┐
-                    │          LOCKED              │
-  initialize()      │                             │
-  + deposit ───────▶│  Funds held in contract.    │
-                    │  Buyer, seller, facilitator, │
-                    │  amount, deadline recorded.  │
-                    │                             │
-                    └──────────┬──────────┬───────┘
-                               │          │
-                  release()    │          │  refund()
-                  by facilitator│         │  by buyer (anytime)
-                  after server  │         │  by facilitator (anytime)
-                  delivers      │         │  by anyone (after deadline)
-                  resource      │         │
-                               ▼          ▼
-                    ┌──────────────┐  ┌──────────────┐
-                    │   RELEASED   │  │   REFUNDED   │
-                    │              │  │              │
-                    │ Funds sent   │  │ Funds sent   │
-                    │ to seller    │  │ back to buyer│
-                    └──────────────┘  └──────────────┘
-```
+| Scheme | Semantics | Settlement |
+|---|---|---|
+| `hathor-direct` | Pay exact amount up front. | No-op — payment is final on-chain. |
+| `hathor-direct-upto` | Authorize a max. Server charges actual usage. | Server issues a refund tx for `max - charged` from its own wallet. |
 
-**Three roles, clear permissions:**
-- **Buyer**: deposits funds (initialize), can cancel anytime (refund)
-- **Facilitator**: releases funds to seller after verification, can refund if service failed
-- **Anyone**: can trigger refund after the deadline — dead man's switch so funds are never locked forever
+Both use the same wire protocol and verifier code path; `upto` adds the optional
+refund step.
 
-## Full payment flow
+## Wire protocol
 
-```
-  CLIENT (AI agent)            RESOURCE SERVER              FACILITATOR              HATHOR
-  ─────────────────            ───────────────              ───────────              ──────
-        │                            │                           │                     │
-   1.   │── GET /weather ──────────▶ │                           │                     │
-        │                            │                           │                     │
-   2.   │◀── 402 Payment Required ── │                           │                     │
-        │    {amount: "100",         │                           │                     │
-        │     asset: "00",           │                           │                     │
-        │     payTo, facilitator,    │                           │                     │
-        │     blueprintId}           │                           │                     │
-        │                            │                           │                     │
-   3.   │── create new X402Escrow ─────────────────────────────────────────────────▶   │
-        │   contract instance        │                           │                     │
-        │   (initialize + deposit    │                           │              LOCKED  │
-        │    1.00 HTR)               │                           │                     │
-        │◀── ncId (= tx hash) ──────────────────────────────────────────────────────── │
-        │                            │                           │                     │
-   4.   │── GET /weather ──────────▶ │                           │                     │
-        │   + X-Payment {ncId}       │                           │                     │
-        │                            │── POST /x402/verify ────▶ │                     │
-        │                            │   {ncId, amount, payTo}   │── query nc state ─▶ │
-        │                            │                           │◀─ {LOCKED, 100} ──  │
-        │                            │◀── {valid: true} ──────── │                     │
-        │                            │                           │                     │
-   5.   │◀── 200 + weather data ──── │                           │                     │
-        │                            │                           │                     │
-   6.   │                            │── POST /x402/settle ────▶ │                     │
-        │                            │   {ncId}                  │── release() ───────▶│
-        │                            │                           │  (withdraw to seller)│
-        │                            │                           │◀── txId ─────────── │
-        │                            │◀── {success, txId} ────── │             RELEASED │
-        │                            │                           │                     │
-```
+402 body returned by the resource server:
 
-**Timing:** ~10s for escrow deposit confirmation, ~100ms for verification, instant HTTP response, ~10s for settlement confirmation. The client waits ~10s before getting the resource; settlement happens async after the resource is served.
-
-## This POC includes
-
-### Backend (Node.js)
-
-| Component | File | Port | What it does |
-|-----------|------|------|-------------|
-| **Facilitator** | `facilitator.js` | 8402 | Verifies escrow state (`/x402/verify`) and triggers settlement (`/x402/settle`) |
-| **Resource Server** | `resource-server.js` | 3000 | Example paid weather API with x402 middleware. Accepts HTR and custom tokens |
-| **Client** | `client.js` | — | Programmatic x402 client. Fetches → gets 402 → creates escrow → retries → gets data |
-| **Blueprint** | `blueprint/x402_escrow.py` | — | The X402Escrow nano contract source (Python 3.11) |
-
-### Frontend (Next.js dApp)
-
-The `dapp/` directory contains a browser-based x402 payment client built with [create-hathor-dapp](https://github.com/HathorNetwork/create-hathor-dapp):
-
-1. Connect your Hathor wallet (WalletConnect / Reown)
-2. Enter any x402-enabled URL
-3. See the 402 payment requirements (amount, token options, seller)
-4. Click "Pay & Access" — your wallet signs the escrow deposit
-5. Wait for on-chain confirmation (~10s)
-6. Resource data displayed
-
-The dApp replaces `client.js` for interactive use — instead of the agent calling wallet-headless programmatically, the user approves the escrow deposit through their wallet app.
-
-## Multi-token support
-
-The resource server can accept multiple tokens per route. The 402 response lists all options in the `accepts` array:
-
-```json
+```jsonc
 {
-  "accepts": [
-    { "asset": "00", "amount": "100", "description": "Pay 1.00 HTR" },
-    { "asset": "000003e3...", "amount": "1000", "description": "Or pay 10.00 hUSDC" }
-  ]
+  "x402Version": 2,
+  "accepts": [{
+    "scheme": "hathor-direct" | "hathor-direct-upto",
+    "network": "hathor:testnet",
+    "amount": "100",          // atomic units; 1 HTR = 100. For upto, this is MAX.
+    "asset": "00",            // "00" = HTR
+    "payTo": "WXf4x…",
+    "resource": "https://host/route",
+    "maxTimeoutSeconds": 120,
+    "description": "Pay 1.00 HTR",
+    "extra": {
+      "requestId": "<base64url(claims)>.<base64url(mac)>",
+      "facilitatorUrl": "https://…"   // optional
+    }
+  }]
 }
 ```
 
-The client picks whichever token it holds. The escrow blueprint is token-agnostic — it works with any Hathor token.
+The client retries with a `PAYMENT-SIGNATURE` header (base64-encoded JSON):
 
-## Quick Start
-
-### Prerequisites
-
-- Node.js 18+
-- [Hathor Forge](https://github.com/HathorNetwork/hathor-forge) (local blockchain)
-
-### 1. Start Hathor Forge
-
-```bash
-hathor-forge-cli --start
+```jsonc
+{
+  "x402Version": 2,
+  "scheme": "hathor-direct",
+  "network": "hathor:testnet",
+  "payload": {
+    "txId": "000abc…",
+    "payerAddress": "WPo2…",
+    "signature": "BASE64…",
+    "requestId": "<base64url(claims)>.<base64url(mac)>"
+  }
+}
 ```
 
-### 2. Create and fund wallets
+## Components
+
+| Component | File | Port | What it does |
+|---|---|---|---|
+| **Resource server** | `resource-server.js` | 3000 | Paid `/weather` (direct) + `/generate` (upto). Self-verifies via `verifier.js`. |
+| **Facilitator** (optional) | `facilitator.js` | 8402 | Thin HTTP wrapper around the verifier. No wallet, no seeds, no nano contracts. |
+| **Verifier** | `verifier.js` | — | Single source of truth for "is this payment claim valid?" |
+| **Dedup store** | `dedupStore.js` + SQLite | — | Atomic `(txId, outputIndex)` ledger + payer blocklist. |
+| **requestId** | `requestId.js` | — | Stateless HMAC challenge token (binds payment ↔ request). |
+| **Void watcher** | `voidWatcher.js` | — | Background detection of double-spent payments → blocklist. |
+| **Refund issuer** | `refundIssuer.js` | — | Calls the seller's wallet-headless to issue upto refunds. |
+| **CLI client** | `client.js` | — | Buyer-side smoke test using `@hathor/wallet-lib`. |
+| **dApp** | `dapp/` | 3000 | Browser client (Next.js + WalletConnect/Reown + MetaMask Snap). |
+| **MCP example** | `examples/mcp-server/` | stdio | Paid MCP tool gated by `hathor-direct`. |
+
+## Quick start
 
 ```bash
-hathor-forge create-wallet buyer
-hathor-forge create-wallet facilitator
-hathor-forge create-wallet seller
-hathor-forge fund-wallet buyer --amount 100
-hathor-forge fund-wallet facilitator --amount 10
-```
+# 0. Fund a Hathor address on testnet (faucet) — that's the seller address.
+#    Generate a seed for the seller wallet (only needed for the upto scheme).
 
-### 3. Publish the blueprint
-
-```bash
-hathor-forge publish-blueprint facilitator --code blueprint/x402_escrow.py
-# Note the returned blueprint_id
-```
-
-### 4. Configure and run
-
-```bash
 cp .env.example .env
-# Edit .env with your wallet addresses and blueprint_id
+$EDITOR .env       # set SELLER_ADDRESS, SELLER_SEED, SERVER_SECRET
 
-npm install
+docker compose up --build
+#   -> wallet-headless on :8000 (seller wallet)
+#   -> resource-server on :3000 (paid /weather, /generate)
+#   -> dapp on :4020
 
-# Terminal 1: Facilitator
-node facilitator.js
-
-# Terminal 2: Resource server
-node resource-server.js
-
-# Terminal 3: Client
-node client.js
+# Browser: http://localhost:4020 — connect WalletConnect, fetch the paid URL.
+# CLI:     BUYER_SEED='...' node client.js --route weather
 ```
 
-### 5. Or use the dApp
+## What this PoC is NOT
 
-```bash
-cd dapp
-npm install
-npm run dev
-# Open http://localhost:3000, connect wallet, fetch a paid URL
-```
-
-## Project Structure
-
-```
-x402-poc/
-├── blueprint/
-│   └── x402_escrow.py        # Escrow nano contract (Python 3.11)
-├── facilitator.js             # Verify + settle service (:8402)
-├── resource-server.js         # Example paid API (:3000)
-├── client.js                  # Programmatic x402 client
-├── config.js                  # Shared config (env vars)
-├── helpers.js                 # HTTP helpers
-├── dapp/                      # Browser-based x402 client (Next.js)
-│   ├── app/                   # Pages (dashboard, escrow detail)
-│   ├── components/            # X402Fetch, EscrowList, EscrowDetail
-│   ├── contexts/              # Wallet, Hathor, WalletConnect providers
-│   └── lib/                   # Config, API, escrow store
-├── Dockerfile
-├── .env.example
-└── package.json
-```
-
-## What's next
-
-This is a POC. A production implementation would add:
-
-- **`@hathor/x402-client`** — npm package wrapping `fetch()` to handle 402 automatically ([RFC](https://github.com/HathorNetwork/rfcs/blob/feat/x402-support/projects/x402/0002-x402-client-sdk.md))
-- **`@hathor/x402-server`** — Express middleware to add x402 to any API in 3 lines ([RFC](https://github.com/HathorNetwork/rfcs/blob/feat/x402-support/projects/x402/0003-x402-server-middleware.md))
-- **Facilitator as headless plugin** — runs inside `hathor-wallet-headless`, not as a separate server
-- **Hosted public facilitator** — so sellers don't need to run their own
-- **Mempool-aware verification** — verify escrow before block confirmation (~1s instead of ~10s)
-- **Payment channels** — pre-funded escrows for repeat clients (eliminates per-request latency)
+- **Not production-ready.** Idempotent retry response caching, blocklist
+  sharing, structured logging, metrics, key rotation for `SERVER_SECRET`
+  are all deferred.
+- **Not confidential-transaction-enabled.** Hathor's shielded outputs are
+  alpha and out of mainnet — the design is *compatible* with future CT but
+  this PoC doesn't exercise it.
+- **No protocol-level refund** beyond the upto remainder. If the server takes
+  the payment and doesn't deliver, there is no on-chain recovery — same trust
+  model as EVM `exact`. Reputation + small amounts + amount caps is the
+  bounding mechanism.
 
 ## References
 
-- [x402 Protocol Specification](https://www.x402.org/)
-- [RFC: x402 Support for Hathor Network](https://github.com/HathorNetwork/rfcs/blob/feat/x402-support/projects/x402/0001-x402-support.md)
-- [RFC: x402 Client SDK](https://github.com/HathorNetwork/rfcs/blob/feat/x402-support/projects/x402/0002-x402-client-sdk.md)
-- [RFC: x402 Server Middleware](https://github.com/HathorNetwork/rfcs/blob/feat/x402-support/projects/x402/0003-x402-server-middleware.md)
-- [Hathor Nano Contracts](https://hathor.network/resources/nano-contracts/)
-- [Hathor Forge](https://github.com/HathorNetwork/hathor-forge) — Local development environment
-- [create-hathor-dapp](https://github.com/HathorNetwork/create-hathor-dapp) — dApp scaffolding template
+- Design proposal: [`../x402-hathor-no-nc-proposal.md`](../x402-hathor-no-nc-proposal.md)
+- x402 specification: <https://www.x402.org/>
+- x402 v1 → v2 migration: <https://docs.x402.org/guides/migration-v1-to-v2>
+- Hathor wallet-lib `signMessage`/`verifyMessage`:
+  `hathor-wallet-lib/src/utils/crypto.ts`
+- Hathor RPC methods (`htr_sendTransaction`, `htr_signWithAddress`):
+  `hathor-rpc-lib/packages/hathor-rpc-handler/src/types/rpcRequest.ts`
 
 ## License
 

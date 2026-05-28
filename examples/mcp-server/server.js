@@ -1,159 +1,166 @@
 #!/usr/bin/env node
 
-// x402 Payment-Gated MCP Server Example
+// x402-gated MCP server — single-tool example.
 //
-// Demonstrates how to build an MCP server where tool calls require x402 payment
-// on Hathor Network. AI agents (Claude Code, etc.) can discover and pay for tools.
+// `get_weather` returns weather data only if the caller includes a valid
+// `payment` argument (base64-encoded x402 PaymentPayload pointing at an
+// on-chain hathor-direct payment). The server verifies the payment locally
+// via the shared verifier — no facilitator, no escrow, no nano contracts.
 //
-// Flow:
-//   1. Agent calls a tool (e.g., get_weather)
-//   2. Server returns a 402-style error with payment requirements
-//   3. Agent creates an escrow on Hathor, sends payment proof
-//   4. Server verifies + settles via the facilitator, returns data
+// Run:
+//   SELLER_ADDRESS=WZe3...  SERVER_SECRET=...  node server.js
 //
-// Usage:
-//   FACILITATOR_URL=https://facilitator.x402.hathor.dev \
-//   SELLER_ADDRESS=WZe3... \
-//   BLUEPRINT_ID=0000121e... \
-//   node server.js
+// Use with Claude Code: see README.
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { createRequire } from 'module';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
+const require = createRequire(import.meta.url);
+const { openStore } = require('../../dedupStore.js');
+const { mintRequestId } = require('../../requestId.js');
+const { verifyDirectPayment } = require('../../verifier.js');
 
-const config = {
-  facilitatorUrl: process.env.FACILITATOR_URL || 'https://facilitator.x402.hathor.dev',
-  facilitatorAddress: process.env.FACILITATOR_ADDRESS || '',
-  sellerAddress: process.env.SELLER_ADDRESS || '',
-  blueprintId: process.env.BLUEPRINT_ID || '',
+// --- config ----------------------------------------------------------------
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_DEDUP = path.join(__dirname, 'data', 'payments.sqlite');
+
+const cfg = {
+  fullnodeUrl: process.env.FULLNODE_URL || 'https://node1.testnet.hathor.network',
   network: process.env.HATHOR_NETWORK || 'testnet',
+  sellerAddress: process.env.SELLER_ADDRESS || '',
+  serverSecret: process.env.SERVER_SECRET || '',
+  requestIdTtlSeconds: parseInt(process.env.REQUEST_ID_TTL_SECONDS || '120', 10),
   htrTokenUid: '00',
-  pricePerCall: 100, // 1.00 HTR in smallest units
-  deadlineSeconds: 300,
+  pricePerCall: parseInt(process.env.PRICE_PER_CALL || '100', 10),
+  dedupDbPath: process.env.DEDUP_DB_PATH || DEFAULT_DEDUP,
+  resourceBase: process.env.MCP_RESOURCE_BASE || 'mcp://x402-mcp-server',
 };
 
-// ---------------------------------------------------------------------------
-// x402 helpers
-// ---------------------------------------------------------------------------
+if (!cfg.sellerAddress) {
+  // eslint-disable-next-line no-console
+  console.error('[x402-mcp] WARNING: SELLER_ADDRESS unset — 402 responses will be invalid');
+}
+if (!cfg.serverSecret) {
+  // eslint-disable-next-line no-console
+  console.error('[x402-mcp] WARNING: SERVER_SECRET unset — requestId verification will reject everything');
+}
+
+const store = openStore(cfg.dedupDbPath);
+
+// --- 402 + verify helpers --------------------------------------------------
 
 function buildPaymentRequired(toolName) {
+  const resource = `${cfg.resourceBase}/tool/${toolName}`;
+  const network = `hathor:${cfg.network}`;
+  const requestId = mintRequestId(
+    {
+      route: resource,
+      amount: String(cfg.pricePerCall),
+      payTo: cfg.sellerAddress,
+      asset: cfg.htrTokenUid,
+      network,
+    },
+    cfg.serverSecret || 'dev-fallback-secret',
+    cfg.requestIdTtlSeconds
+  );
   return {
     x402Version: 2,
-    accepts: [
-      {
-        scheme: 'hathor-escrow',
-        network: `hathor:${config.network}`,
-        resource: `mcp://x402-mcp-server/tool/${toolName}`,
-        mimeType: 'application/json',
-        payTo: config.sellerAddress,
-        maxTimeoutSeconds: config.deadlineSeconds,
-        asset: config.htrTokenUid,
-        price: String(config.pricePerCall),
-        description: `Pay ${(config.pricePerCall / 100).toFixed(2)} HTR for ${toolName}`,
-        extra: {
-          facilitatorUrl: config.facilitatorUrl,
-          facilitatorAddress: config.facilitatorAddress,
-          blueprintId: config.blueprintId,
-          deadlineSeconds: config.deadlineSeconds,
-        },
-      },
-    ],
+    accepts: [{
+      scheme: 'hathor-direct',
+      network,
+      resource,
+      amount: String(cfg.pricePerCall),
+      asset: cfg.htrTokenUid,
+      payTo: cfg.sellerAddress,
+      maxTimeoutSeconds: cfg.requestIdTtlSeconds,
+      description: `Pay ${(cfg.pricePerCall / 100).toFixed(2)} HTR for ${toolName}`,
+      extra: { requestId },
+    }],
   };
 }
 
-async function verifyAndSettle(paymentProof) {
-  const paymentPayload = typeof paymentProof === 'string'
-    ? JSON.parse(Buffer.from(paymentProof, 'base64').toString('utf-8'))
-    : paymentProof;
-
-  // Verify
-  const verifyResp = await fetch(`${config.facilitatorUrl}/x402/verify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      paymentPayload,
-      paymentRequirements: [{
-        scheme: 'hathor-escrow',
-        network: `hathor:${config.network}`,
-        maxAmountRequired: String(config.pricePerCall),
-        payTo: config.sellerAddress,
-        asset: config.htrTokenUid,
-      }],
-    }),
-  });
-  const verification = await verifyResp.json();
-  if (!verification.valid) {
-    throw new Error(`Payment invalid: ${verification.invalidReason}`);
+async function verifyPayment(paymentArg, toolName) {
+  let payload;
+  try {
+    payload = typeof paymentArg === 'string'
+      ? JSON.parse(Buffer.from(paymentArg, 'base64').toString('utf-8'))
+      : paymentArg;
+  } catch (_) {
+    return { valid: false, invalidReason: 'invalid_payment_encoding' };
   }
 
-  // Settle
-  const settleResp = await fetch(`${config.facilitatorUrl}/x402/settle`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paymentPayload }),
-  });
-  const settlement = await settleResp.json();
-  if (!settlement.success) {
-    throw new Error(`Settlement failed: ${settlement.error}`);
-  }
+  const resource = `${cfg.resourceBase}/tool/${toolName}`;
+  const requirement = {
+    scheme: 'hathor-direct',
+    network: `hathor:${cfg.network}`,
+    amount: String(cfg.pricePerCall),
+    asset: cfg.htrTokenUid,
+    payTo: cfg.sellerAddress,
+    resource,
+  };
 
-  return settlement;
+  return verifyDirectPayment({
+    payload,
+    requirements: requirement,
+    fullnodeUrl: cfg.fullnodeUrl,
+    dedupStore: store,
+    serverSecret: cfg.serverSecret,
+    zeroConfMaxAmount: Number.MAX_SAFE_INTEGER,
+  });
 }
 
-// ---------------------------------------------------------------------------
-// MCP Server
-// ---------------------------------------------------------------------------
+// --- MCP server ------------------------------------------------------------
 
 const server = new McpServer({
   name: 'x402-weather',
-  version: '0.1.0',
+  version: '0.2.0',
 });
 
-// Paid tool: get_weather
 server.tool(
   'get_weather',
-  'Get current weather for a city. Costs 1.00 HTR per call via x402 payment.',
+  'Get current weather for a city. Costs 1.00 HTR per call via x402 hathor-direct payment.',
   {
     city: z.string().describe('City name (e.g., "Sao Paulo")'),
-    payment: z.string().optional().describe('Base64-encoded x402 PAYMENT-SIGNATURE (hathor-escrow proof)'),
+    payment: z.string().optional().describe('Base64-encoded x402 hathor-direct PaymentPayload (JSON)'),
   },
   async ({ city, payment }) => {
-    // No payment? Return 402-style payment requirements
     if (!payment) {
       const requirements = buildPaymentRequired('get_weather');
       return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'payment_required',
-              status: 402,
-              message: `This tool costs ${(config.pricePerCall / 100).toFixed(2)} HTR per call. Include a "payment" parameter with your x402 payment proof.`,
-              ...requirements,
-            }, null, 2),
-          },
-        ],
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: 'payment_required',
+            status: 402,
+            message: `This tool costs ${(cfg.pricePerCall / 100).toFixed(2)} HTR per call. Include a "payment" argument (base64 JSON) with a hathor-direct PaymentPayload.`,
+            ...requirements,
+          }, null, 2),
+        }],
         isError: true,
       };
     }
 
-    // Verify and settle payment
-    let settlement;
-    try {
-      settlement = await verifyAndSettle(payment);
-    } catch (err) {
+    const verification = await verifyPayment(payment, 'get_weather');
+    if (!verification.valid) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ error: 'payment_failed', message: err.message }) }],
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: 'payment_invalid',
+            reason: verification.invalidReason,
+            ...buildPaymentRequired('get_weather'),
+          }, null, 2),
+        }],
         isError: true,
       };
     }
 
-    // Payment confirmed — return the weather data
-    const weatherData = {
+    const data = {
       city,
       temperature: Math.round(20 + Math.random() * 15),
       humidity: Math.round(40 + Math.random() * 40),
@@ -163,64 +170,64 @@ server.tool(
     };
 
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            data: weatherData,
-            payment: {
-              x402Version: 2,
-              success: true,
-              scheme: 'hathor-escrow',
-              network: `hathor:${config.network}`,
-              settleTxId: settlement.txId,
-            },
-          }, null, 2),
-        },
-      ],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          data,
+          payment: {
+            x402Version: 2,
+            success: true,
+            scheme: 'hathor-direct',
+            network: `hathor:${cfg.network}`,
+            transaction: verification.txId,
+            payer: verification.payerAddress,
+            amount: String(verification.amount),
+            idempotent: !!verification.idempotent,
+          },
+        }, null, 2),
+      }],
     };
   },
 );
 
-// Free tool: get_price (shows how to mix free and paid tools)
+// Free tool: pricing/discovery.
 server.tool(
   'get_price',
-  'Get the current x402 price for a tool call. Free — no payment needed.',
-  {
-    tool_name: z.string().describe('Name of the tool to check pricing for'),
-  },
+  'Get the current x402 price + payment requirements for a tool. Free.',
+  { tool_name: z.string().describe('Tool name to check pricing for') },
   async ({ tool_name }) => {
     const requirements = buildPaymentRequired(tool_name);
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            tool: tool_name,
-            price: `${(config.pricePerCall / 100).toFixed(2)} HTR`,
-            network: `hathor:${config.network}`,
-            paymentInfo: requirements,
-          }, null, 2),
-        },
-      ],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          tool: tool_name,
+          price: `${(cfg.pricePerCall / 100).toFixed(2)} HTR`,
+          network: `hathor:${cfg.network}`,
+          paymentInfo: requirements,
+        }, null, 2),
+      }],
     };
   },
 );
 
-// ---------------------------------------------------------------------------
-// Start
-// ---------------------------------------------------------------------------
+// --- Run -------------------------------------------------------------------
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('[x402-mcp-server] Running on stdio');
-  console.error(`[x402-mcp-server] Seller: ${config.sellerAddress}`);
-  console.error(`[x402-mcp-server] Facilitator: ${config.facilitatorUrl}`);
-  console.error(`[x402-mcp-server] Price per call: ${(config.pricePerCall / 100).toFixed(2)} HTR`);
+  // eslint-disable-next-line no-console
+  console.error('[x402-mcp] Running on stdio');
+  // eslint-disable-next-line no-console
+  console.error(`[x402-mcp] Seller: ${cfg.sellerAddress}`);
+  // eslint-disable-next-line no-console
+  console.error(`[x402-mcp] Network: ${cfg.network} via ${cfg.fullnodeUrl}`);
+  // eslint-disable-next-line no-console
+  console.error(`[x402-mcp] Dedup store: ${cfg.dedupDbPath}`);
 }
 
-main().catch(err => {
-  console.error(`[x402-mcp-server] Fatal: ${err.message}`);
+main().catch((err) => {
+  // eslint-disable-next-line no-console
+  console.error(`[x402-mcp] Fatal: ${err.message}`);
   process.exit(1);
 });

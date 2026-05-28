@@ -4,220 +4,268 @@ import { useState } from 'react';
 import { useWallet } from '@/contexts/WalletContext';
 import { useHathor } from '@/contexts/HathorContext';
 import { config } from '@/lib/config';
+import { HathorRPCService } from '@/lib/hathorRPC';
 import { toast } from '@/lib/toast';
 import { formatAddress } from '@/lib/utils';
+import { addPayment, getPayments, PaymentRecord } from '@/lib/paymentHistory';
+
+// --- types -----------------------------------------------------------------
 
 interface PaymentOption {
-  scheme: string;
+  scheme: 'hathor-direct' | 'hathor-direct-upto' | string;
   network: string;
   asset: string;
-  price: string;
-  description: string;
+  amount: string;
+  description?: string;
   resource: string;
   payTo: string;
+  maxTimeoutSeconds?: number;
   extra: {
-    facilitatorUrl: string;
-    facilitatorAddress: string;
-    blueprintId?: string;
-    channelBlueprintId?: string;
-    deadlineSeconds: number;
-    pricing?: 'exact' | 'upto';
+    requestId: string;
+    facilitatorUrl?: string;
   };
 }
 
-interface PaymentHistory {
-  id: string;
-  url: string;
-  scheme: string;
-  contractId: string;
-  amount: string;
-  chargedAmount?: string;
-  refundAmount?: string;
-  timestamp: Date;
+type Step =
+  | 'idle'
+  | 'fetching'
+  | 'got402'
+  | 'confirming_send'
+  | 'waiting_mempool'
+  | 'signing'
+  | 'retrying'
+  | 'done'
+  | 'error';
+
+// --- helpers ---------------------------------------------------------------
+
+async function pollMempool(nodeUrl: string, txId: string, maxAttempts = 30): Promise<any> {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const resp = await fetch(`${nodeUrl}/transaction?id=${encodeURIComponent(txId)}`);
+      const data = await resp.json();
+      if (data?.success) return data;
+    } catch {
+      /* retry */
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new Error('Transaction not visible at fullnode after 30s');
 }
 
-type Step = 'idle' | 'fetching' | 'got402' | 'creating' | 'waiting_confirmation' | 'retrying' | 'done' | 'error';
-
-const CHANNEL_STORAGE_KEY = 'x402_active_channel';
-
-function getStoredChannel(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(CHANNEL_STORAGE_KEY);
+function getInputAddresses(tx: any): Set<string> {
+  const addrs = new Set<string>();
+  for (const inp of tx?.inputs || []) {
+    const a = inp?.decoded?.address;
+    if (a) addrs.add(a);
+  }
+  return addrs;
 }
 
-function storeChannel(channelId: string) {
-  localStorage.setItem(CHANNEL_STORAGE_KEY, channelId);
+function describeAmount(atomicStr: string) {
+  const n = parseInt(atomicStr, 10);
+  if (!Number.isFinite(n)) return atomicStr;
+  return `${(n / 100).toFixed(2)} HTR`;
 }
 
-function clearStoredChannel() {
-  localStorage.removeItem(CHANNEL_STORAGE_KEY);
+function describeScheme(scheme: string) {
+  if (scheme === 'hathor-direct-upto') return 'upto';
+  if (scheme === 'hathor-direct') return 'direct';
+  return scheme;
 }
+
+// --- component -------------------------------------------------------------
 
 export function X402Fetch() {
-  const { sendNanoContractTx, address, refreshBalance } = useWallet();
-  const { network, isConnected, addEscrow } = useHathor();
+  const { sendTransaction, signWithAddress, getUtxos, address, refreshBalance } = useWallet();
+  const { network, isConnected } = useHathor();
 
-  const [url, setUrl] = useState('https://api.x402.hathor.dev/weather');
+  const [url, setUrl] = useState(config.defaultDemoUrl);
   const [step, setStep] = useState<Step>('idle');
-  const [paymentOptions, setPaymentOptions] = useState<PaymentOption[]>([]);
-  const [selectedOption, setSelectedOption] = useState<PaymentOption | null>(null);
+  const [accept, setAccept] = useState<PaymentOption | null>(null);
   const [resourceData, setResourceData] = useState<any>(null);
+  const [paymentInfo, setPaymentInfo] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
-  const [contractId, setContractId] = useState<string | null>(null);
-  const [history, setHistory] = useState<PaymentHistory[]>([]);
-  const [activeChannel, setActiveChannel] = useState<string | null>(getStoredChannel());
+  const [txId, setTxId] = useState<string | null>(null);
+  const [history, setHistory] = useState<PaymentRecord[]>(() => getPayments());
 
   const reset = () => {
     setStep('idle');
-    setPaymentOptions([]);
-    setSelectedOption(null);
+    setAccept(null);
     setResourceData(null);
+    setPaymentInfo(null);
     setError(null);
-    setContractId(null);
+    setTxId(null);
   };
 
-  const addToHistory = (scheme: string, id: string, amount: string, chargedAmount?: string, refundAmount?: string) => {
-    setHistory(prev => [{ id: Date.now().toString(), url, scheme, contractId: id, amount, chargedAmount, refundAmount, timestamp: new Date() }, ...prev]);
-  };
-
-  // Try to pay with an existing channel (instant — no wallet interaction)
-  const payWithChannel = async (channelId: string): Promise<boolean> => {
-    const paymentPayload = {
-      x402Version: 2,
-      scheme: 'hathor-channel',
-      network: `hathor:${network}`,
-      payload: { channelId, buyerAddress: address },
-    };
-
-    const resp = await fetch(url, { mode: 'cors', headers: { 'PAYMENT-SIGNATURE': btoa(JSON.stringify(paymentPayload)) } });
-    if (!resp.ok) return false;
-
-    const data = await resp.json();
-    setResourceData(data);
-    setContractId(channelId);
-    setStep('done');
-    addToHistory('hathor-channel', channelId, '100');
-    refreshBalance('00', network);
-    return true;
-  };
-
-  // Step 1: Fetch the URL
+  // Step 1: GET → expect 402
   const handleFetch = async () => {
     reset();
-
-    // If we have an active channel, try instant payment first
-    if (activeChannel) {
-      setStep('retrying');
-      const ok = await payWithChannel(activeChannel).catch(() => false);
-      if (ok) {
-        toast.success('Paid via channel (instant!)');
-        return;
-      }
-      // Channel failed — clear it and fall through to normal 402 flow
-      clearStoredChannel();
-      setActiveChannel(null);
-      toast.info('Channel exhausted. Fetching payment options...');
-    }
-
     setStep('fetching');
-
     try {
-      const resp = await fetch(url, { mode: 'cors' });
-
-      if (resp.ok) {
-        setResourceData(await resp.json());
+      const r = await fetch(url, { mode: 'cors' });
+      if (r.ok) {
+        setResourceData(await r.json());
         setStep('done');
         toast.success('Resource is free!');
         return;
       }
-
-      if (resp.status !== 402) throw new Error(`Unexpected status: ${resp.status}`);
-
-      const body = await resp.json();
-      if (!body.accepts?.length) throw new Error('No payment options in 402');
-
-      setPaymentOptions(body.accepts);
-      setSelectedOption(body.accepts[0]);
+      if (r.status !== 402) throw new Error(`Unexpected status ${r.status}`);
+      const body = await r.json();
+      if (!body?.accepts?.length) throw new Error('No accepts in 402 body');
+      setAccept(body.accepts[0]);
       setStep('got402');
     } catch (err: any) {
-      setError(err.message || 'Failed to fetch');
+      setError(err.message);
       setStep('error');
     }
   };
 
-  // Step 2: Pay (escrow, channel, or upto escrow)
+  // Step 2: send tx, sign requestId, retry
   const handlePay = async () => {
-    if (!selectedOption || !isConnected || !address) return;
-    const opt = selectedOption;
-    const isChannel = opt.scheme === 'hathor-channel';
-    const isUpto = opt.scheme === 'hathor-escrow-upto';
+    if (!accept || !isConnected || !address) return;
+    const opt = accept;
 
     try {
-      setStep('creating');
-      let id: string;
+      // We assume the wallet shared address-0 (its first address) at connect
+      // time — true for WalletConnect/Reown's session approval flow (see
+      // hathor-wallet/src/sagas/reown.js:184). To make the on-chain tx's
+      // input(s) provably belong to address-0, we explicitly fetch UTXOs
+      // filtered to that address and hand them to htr_sendTransaction as
+      // `inputs`. The wallet then *must* use only those UTXOs, so every
+      // input address in the resulting tx is address-0, and signing with
+      // addressIndex: 0 produces a signature the verifier accepts.
+      const PAYER_INDEX = 0;
+      const payerAddress = address!;
+      const amount = parseInt(String(opt.amount).replace(/[^0-9]/g, ''), 10);
 
-      if (isChannel) {
-        // Create a new channel with 10x the per-request amount
-        const deadline = Math.floor(Date.now() / 1000) + 3600;
-        const deposit = parseInt(opt.price) * 10;
-        toast.info('Confirm the channel deposit in your wallet...');
+      // Step 1: list the connected address's UTXOs (asset-filtered).
+      setStep('confirming_send');
+      toast.info('Listing your UTXOs at address-0...');
+      const utxoDetails = await getUtxos({
+        network,
+        filterAddress: payerAddress,
+        token: opt.asset || '00',
+        onlyAvailableUtxos: true,
+        maxUtxos: 255,
+      });
+      const available = (utxoDetails?.utxos || [])
+        .filter((u) => !u.locked)
+        .map((u) => ({ ...u, _amt: Number(u.amount) }))
+        .sort((a, b) => b._amt - a._amt); // largest first → fewer inputs
 
-        const result = await sendNanoContractTx({
-          network, blueprint_id: opt.extra.channelBlueprintId, method: 'initialize',
-          args: [opt.extra.facilitatorAddress, opt.asset, deadline],
-          actions: [{ type: 'deposit', amount: String(deposit), token: opt.asset }],
-          push_tx: true,
-        });
-        id = result?.response?.hash || result?.hash || result?.response?.response?.hash;
-        if (!id) throw new Error('No tx hash');
-        storeChannel(id);
-        setActiveChannel(id);
-        toast.success(`Channel created: ${id.slice(0, 12)}...`);
-      } else {
-        // Create a one-shot escrow (same initialize() for both exact and upto —
-        // the difference is how the facilitator settles it: release() vs release_upto()).
-        const deadline = Math.floor(Date.now() / 1000) + opt.extra.deadlineSeconds;
-        toast.info(isUpto
-          ? `Confirm the escrow deposit (max ${(parseInt(opt.price) / 100).toFixed(2)} HTR) in your wallet...`
-          : 'Confirm the escrow deposit in your wallet...');
-
-        const result = await sendNanoContractTx({
-          network, blueprint_id: opt.extra.blueprintId, method: 'initialize',
-          args: [opt.payTo, opt.extra.facilitatorAddress, opt.asset, deadline, opt.resource, 'dapp-x402'],
-          actions: [{ type: 'deposit', amount: opt.price, token: opt.asset }],
-          push_tx: true,
-        });
-        id = result?.response?.hash || result?.hash || result?.response?.response?.hash;
-        if (!id) throw new Error('No tx hash');
-        await addEscrow(id);
-        toast.success(`Escrow created: ${id.slice(0, 12)}...`);
+      // Greedy-pick enough UTXOs to cover the payment.
+      const chosen: typeof available = [];
+      let total = 0;
+      for (const u of available) {
+        chosen.push(u);
+        total += u._amt;
+        if (total >= amount) break;
+      }
+      if (total < amount) {
+        throw new Error(
+          `Address-0 (${payerAddress.slice(0, 8)}...) has ${(total / 100).toFixed(2)} HTR available — need ${(amount / 100).toFixed(2)} HTR. Move funds to this address and retry.`
+        );
       }
 
-      setContractId(id);
+      toast.info('Confirm the payment in your wallet...');
+      const sendOutput: any = {
+        address: opt.payTo,
+        // The wallet RPC validates `value` as a digit string (not a number).
+        value: String(amount),
+      };
+      if (opt.asset && opt.asset !== '00') sendOutput.token = opt.asset;
 
-      // Wait for confirmation
-      setStep('waiting_confirmation');
-      await waitForConfirmation(id);
+      const sendResp = await sendTransaction({
+        network,
+        outputs: [sendOutput],
+        inputs: chosen.map((u) => ({ txId: u.tx_id, index: u.index })),
+        changeAddress: payerAddress, // consolidate change back to address-0
+        push_tx: true,
+      });
+      const sentTxId = HathorRPCService.extractTxId(sendResp);
+      if (!sentTxId) throw new Error('Wallet did not return a transaction hash');
+      setTxId(sentTxId);
+      toast.success(`Payment broadcast — ${sentTxId.slice(0, 10)}...`);
 
-      // Retry with payment proof — scheme in the payload must match the 402 accept
+      // Wait until our fullnode sees the tx — no need for first_block. Capture
+      // the response so we can validate against the actual on-chain inputs.
+      setStep('waiting_mempool');
+      const mempoolResp = await pollMempool(config.hathorNodeUrls[network], sentTxId);
+      const inputAddrs = getInputAddresses(mempoolResp?.tx);
+
+      // Sign the server-issued requestId with address-0's key.
+      setStep('signing');
+      toast.info('Confirm the signature in your wallet...');
+      const signed = await signWithAddress({
+        network,
+        message: opt.extra.requestId,
+        addressIndex: PAYER_INDEX,
+      });
+
+      // Sanity check — with explicit UTXO selection all inputs *should* be
+      // from address-0. If something else slipped in (wallet implementation
+      // quirk), surface a precise error matching what the verifier will say.
+      if (!inputAddrs.has(signed.address.address)) {
+        throw new Error(
+          `Signed address (${signed.address.address.slice(0, 8)}...) is not among this tx's input addresses ` +
+            `[${[...inputAddrs].map((a) => a.slice(0, 8) + '...').join(', ')}]. ` +
+            `Unexpected — the wallet didn't honour the explicit input list.`
+        );
+      }
+
+      // Retry the original GET with the proof header.
       setStep('retrying');
-      const paymentPayload = isChannel
-        ? { x402Version: 2, scheme: 'hathor-channel', network: `hathor:${network}`, payload: { channelId: id, buyerAddress: address } }
-        : { x402Version: 2, scheme: opt.scheme, network: `hathor:${network}`, payload: { ncId: id, depositTxId: id, buyerAddress: address } };
+      const payload = {
+        x402Version: 2,
+        scheme: opt.scheme,
+        network: opt.network,
+        payload: {
+          txId: sentTxId,
+          payerAddress: signed.address.address,
+          signature: signed.signature,
+          requestId: opt.extra.requestId,
+        },
+      };
+      const headerB64 =
+        typeof window !== 'undefined' && typeof window.btoa === 'function'
+          ? window.btoa(JSON.stringify(payload))
+          : Buffer.from(JSON.stringify(payload)).toString('base64');
 
-      const paidResp = await fetch(url, { mode: 'cors', headers: { 'PAYMENT-SIGNATURE': btoa(JSON.stringify(paymentPayload)) } });
+      const paidResp = await fetch(url, {
+        mode: 'cors',
+        headers: { 'PAYMENT-SIGNATURE': headerB64 },
+      });
       if (!paidResp.ok) {
         const errBody = await paidResp.json().catch(() => ({}));
         throw new Error(errBody.reason || errBody.error || `Rejected: ${paidResp.status}`);
       }
-
       const data = await paidResp.json();
-      setResourceData(data);
+      setResourceData(data?.data ?? data);
+      setPaymentInfo(data?.payment ?? null);
+
+      // Record locally for the history panel + /payment/[txId] page.
+      const record: PaymentRecord = {
+        txId: sentTxId,
+        url,
+        route: opt.resource,
+        scheme: (opt.scheme as PaymentRecord['scheme']) || 'hathor-direct',
+        amount: opt.amount,
+        chargedAmount: data?.payment?.chargedAmount,
+        refundAmount: data?.payment?.refundAmount,
+        refundTxId: data?.payment?.refundTxId,
+        asset: opt.asset,
+        payTo: opt.payTo,
+        payerAddress: signed.address.address,
+        network: opt.network,
+        status: 'served',
+        ts: Date.now(),
+      };
+      addPayment(record);
+      setHistory(getPayments());
+
       setStep('done');
       toast.success('Resource received!');
-      const charged = data?.payment?.chargedAmount != null ? String(data.payment.chargedAmount) : undefined;
-      const refund = data?.payment?.refundAmount != null ? String(data.payment.refundAmount) : undefined;
-      addToHistory(opt.scheme, id, opt.price, charged, refund);
       refreshBalance('00', network);
     } catch (err: any) {
       setError(err.message);
@@ -226,79 +274,56 @@ export function X402Fetch() {
     }
   };
 
-  const waitForConfirmation = async (txId: string) => {
-    const nodeUrl = config.hathorNodeUrls[network];
-    for (let i = 0; i < 60; i++) {
-      try {
-        const resp = await fetch(`${nodeUrl}/transaction?id=${txId}`);
-        const data = await resp.json();
-        if (data.success && data.meta?.first_block) return;
-      } catch { /* retry */ }
-      await new Promise(r => setTimeout(r, 1000));
-    }
-    throw new Error('Confirmation timeout (60s)');
-  };
-
-  const amountDisplay = selectedOption ? `${(parseInt(selectedOption.price) / 100).toFixed(2)} HTR` : '';
-  const isChannel = selectedOption?.scheme === 'hathor-channel';
-  const isUpto = selectedOption?.scheme === 'hathor-escrow-upto';
+  const isUpto = accept?.scheme === 'hathor-direct-upto';
+  const amountLabel = accept ? describeAmount(accept.amount) : '';
 
   return (
     <div className="space-y-6">
-      {/* Active Channel Banner */}
-      {activeChannel && (
-        <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 flex items-center justify-between">
-          <div>
-            <span className="text-green-400 font-medium">Active Payment Channel</span>
-            <p className="text-xs text-slate-400 font-mono mt-1">{formatAddress(activeChannel)}</p>
-            <p className="text-xs text-slate-500">Requests will be paid instantly — no wallet confirmation needed</p>
-          </div>
-          <button
-            onClick={() => { clearStoredChannel(); setActiveChannel(null); toast.info('Channel disconnected'); }}
-            className="text-xs text-slate-400 hover:text-red-400 transition-colors px-3 py-1 border border-slate-600 rounded"
-          >
-            Disconnect
-          </button>
-        </div>
-      )}
-
-      {/* URL Input */}
+      {/* URL input + presets */}
       <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
-        <h3 className="text-lg font-bold text-white mb-2">Access a Paid Resource</h3>
+        <h3 className="text-lg font-bold text-white mb-2">Access a paid resource</h3>
         <p className="text-sm text-slate-400 mb-4">
-          {activeChannel
-            ? 'Your channel will pay instantly — no wallet popup.'
-            : 'Enter an x402-enabled URL. Choose escrow (per-request) or channel (pre-funded).'}
+          Enter an x402-enabled URL. Click <span className="text-amber-400">Fetch</span> to load it.
+          On 402, your wallet will sign a payment.
         </p>
 
         <div className="flex gap-3">
           <input
-            type="text" value={url} onChange={e => setUrl(e.target.value)}
+            type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
             className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white font-mono text-sm"
             disabled={step !== 'idle' && step !== 'error' && step !== 'done'}
           />
           <button
-            onClick={step === 'idle' || step === 'error' || step === 'done' ? handleFetch : undefined}
+            onClick={
+              step === 'idle' || step === 'error' || step === 'done'
+                ? handleFetch
+                : undefined
+            }
             disabled={!url || (step !== 'idle' && step !== 'error' && step !== 'done')}
             className="px-6 py-3 rounded-lg font-medium transition-colors disabled:opacity-50 whitespace-nowrap"
-            style={{ background: 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)', color: '#0f172a' }}
+            style={{
+              background:
+                'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)',
+              color: '#0f172a',
+            }}
           >
             Fetch
           </button>
         </div>
 
-        {/* Preset URLs */}
         <div className="flex flex-wrap gap-2 mt-3">
           <span className="text-xs text-slate-500 self-center">Try:</span>
           <button
-            onClick={() => setUrl('https://api.x402.hathor.dev/weather')}
+            onClick={() => setUrl(`${config.resourceServerUrl}/weather`)}
             disabled={step !== 'idle' && step !== 'error' && step !== 'done'}
             className="text-xs px-3 py-1 rounded border border-slate-600 bg-slate-700 text-slate-300 hover:border-amber-500 hover:text-amber-400 transition-colors disabled:opacity-40"
           >
-            🔒 /weather <span className="text-slate-500">(exact · 1.00 HTR)</span>
+            🌤 /weather <span className="text-slate-500">(direct · 1.00 HTR)</span>
           </button>
           <button
-            onClick={() => setUrl('https://api.x402.hathor.dev/generate')}
+            onClick={() => setUrl(`${config.resourceServerUrl}/generate`)}
             disabled={step !== 'idle' && step !== 'error' && step !== 'done'}
             className="text-xs px-3 py-1 rounded border border-slate-600 bg-slate-700 text-slate-300 hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40"
           >
@@ -314,97 +339,104 @@ export function X402Fetch() {
         </div>
       )}
 
-      {/* Got 402 — payment options */}
-      {step === 'got402' && selectedOption && (
+      {/* Got 402 */}
+      {step === 'got402' && accept && (
         <div className="bg-slate-800 rounded-xl border border-amber-500/50 p-6">
           <div className="flex items-center gap-3 mb-4">
             <span className="text-3xl">💰</span>
             <div>
               <h3 className="text-lg font-bold text-amber-400">402 — Payment Required</h3>
-              <p className="text-sm text-slate-400">Choose how to pay</p>
+              <p className="text-sm text-slate-400">
+                Scheme: <span className="text-amber-400">{describeScheme(accept.scheme)}</span>
+              </p>
             </div>
           </div>
 
-          {/* Option selector */}
-          <div className="flex gap-2 mb-4">
-            {paymentOptions.map((opt, i) => {
-              const isCh = opt.scheme === 'hathor-channel';
-              const isUp = opt.scheme === 'hathor-escrow-upto';
-              const label = isCh ? '⚡ Channel' : isUp ? '📊 Upto' : '🔒 Escrow';
-              const sub = isCh ? 'Instant after setup' : isUp ? 'Usage-billed' : 'One-shot per request';
-              return (
-                <button key={i} onClick={() => setSelectedOption(opt)}
-                  className={`flex-1 px-3 py-3 rounded-lg text-sm border transition-colors text-left ${
-                    selectedOption === opt ? 'border-amber-500 bg-amber-500/20 text-amber-400' : 'border-slate-600 bg-slate-700 text-slate-300 hover:border-slate-500'
-                  }`}>
-                  <div className="font-medium">{label}</div>
-                  <div className="text-xs mt-1 opacity-70">{sub}</div>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Details */}
           <div className="bg-slate-900 rounded-lg p-4 space-y-2 mb-4 text-sm">
             <div className="flex justify-between">
-              <span className="text-slate-400">{isUpto ? 'Max authorized' : 'Per request'}</span>
-              <span className="text-white font-bold">{isUpto ? `up to ${amountDisplay}` : amountDisplay}</span>
-            </div>
-            {isChannel && (
-              <div className="flex justify-between">
-                <span className="text-slate-400">Channel deposit (10 requests)</span>
-                <span className="text-white font-bold">{(parseInt(selectedOption.price) * 10 / 100).toFixed(2)} HTR</span>
-              </div>
-            )}
-            <div className="flex justify-between">
-              <span className="text-slate-400">Seller</span>
-              <span className="text-white font-mono text-xs">{formatAddress(selectedOption.payTo)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">After this</span>
-              <span className={isChannel ? 'text-green-400' : isUpto ? 'text-blue-400' : 'text-slate-400'}>
-                {isChannel ? 'Next 9 requests are instant'
-                  : isUpto ? 'Server settles actual usage, remainder refunded'
-                  : 'Each request needs a new escrow'}
+              <span className="text-slate-400">{isUpto ? 'Max authorized' : 'Pay'}</span>
+              <span className="text-white font-bold">
+                {isUpto ? `up to ${amountLabel}` : amountLabel}
               </span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Seller</span>
+              <span className="text-white font-mono text-xs">{formatAddress(accept.payTo)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Network</span>
+              <span className="text-slate-300">{accept.network}</span>
+            </div>
+            {accept.description && (
+              <div className="flex justify-between">
+                <span className="text-slate-400">Description</span>
+                <span className="text-slate-300 text-right">{accept.description}</span>
+              </div>
+            )}
+            {isUpto && (
+              <div className="flex justify-between">
+                <span className="text-slate-400">After</span>
+                <span className="text-blue-400">
+                  Server charges actual usage, remainder refunded
+                </span>
+              </div>
+            )}
           </div>
 
           <div className="flex gap-3">
-            <button onClick={handlePay} disabled={!isConnected}
+            <button
+              onClick={handlePay}
+              disabled={!isConnected}
               className="flex-1 px-6 py-3 rounded-lg font-medium transition-colors disabled:opacity-50"
-              style={{ background: isConnected ? 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)' : '#475569', color: '#0f172a' }}>
-              {!isConnected ? 'Connect Wallet First'
-                : isChannel ? `Open Channel (${(parseInt(selectedOption.price) * 10 / 100).toFixed(2)} HTR)`
-                : isUpto ? `Authorize up to ${amountDisplay}`
-                : `Pay ${amountDisplay}`}
+              style={{
+                background: isConnected
+                  ? 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)'
+                  : '#475569',
+                color: '#0f172a',
+              }}
+            >
+              {!isConnected
+                ? 'Connect Wallet First'
+                : isUpto
+                  ? `Authorize up to ${amountLabel}`
+                  : `Pay ${amountLabel}`}
             </button>
-            <button onClick={reset} className="px-4 py-3 rounded-lg text-slate-400 hover:text-white border border-slate-600 transition-colors">Cancel</button>
+            <button
+              onClick={reset}
+              className="px-4 py-3 rounded-lg text-slate-400 hover:text-white border border-slate-600 transition-colors"
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}
 
-      {/* Creating */}
-      {step === 'creating' && (
+      {/* In-flight steps */}
+      {step === 'confirming_send' && (
         <div className="bg-slate-800 rounded-xl border border-blue-500/50 p-6 text-center">
-          <div className="text-blue-400 text-lg mb-2">{isChannel ? 'Creating channel...' : 'Creating escrow...'}</div>
-          <p className="text-slate-400 text-sm">Confirm the deposit in your wallet</p>
+          <div className="text-blue-400 text-lg mb-2">Awaiting wallet confirmation...</div>
+          <p className="text-slate-400 text-sm">Approve the payment in your wallet</p>
         </div>
       )}
 
-      {/* Waiting confirmation */}
-      {step === 'waiting_confirmation' && (
+      {step === 'waiting_mempool' && (
         <div className="bg-slate-800 rounded-xl border border-blue-500/50 p-6 text-center">
-          <div className="text-blue-400 text-lg mb-2">Waiting for on-chain confirmation...</div>
-          <p className="text-slate-400 text-sm font-mono">{contractId?.slice(0, 20)}...</p>
-          <p className="text-xs text-slate-500 mt-2">~8-16 seconds</p>
+          <div className="text-blue-400 text-lg mb-2">Waiting for the fullnode to see the tx...</div>
+          {txId && <p className="text-slate-400 text-xs font-mono">{txId.slice(0, 24)}...</p>}
+          <p className="text-xs text-slate-500 mt-2">~1–2 seconds</p>
         </div>
       )}
 
-      {/* Retrying */}
+      {step === 'signing' && (
+        <div className="bg-slate-800 rounded-xl border border-blue-500/50 p-6 text-center">
+          <div className="text-blue-400 text-lg mb-2">Awaiting signature...</div>
+          <p className="text-slate-400 text-sm">Approve the message signature in your wallet</p>
+        </div>
+      )}
+
       {step === 'retrying' && (
         <div className="bg-slate-800 rounded-xl border border-green-500/50 p-6 text-center">
-          <div className="text-green-400 text-lg mb-2">Payment verified! Fetching resource...</div>
+          <div className="text-green-400 text-lg mb-2">Submitting payment proof...</div>
         </div>
       )}
 
@@ -414,45 +446,70 @@ export function X402Fetch() {
           <div className="flex items-center gap-3 mb-4">
             <span className="text-3xl">✅</span>
             <div>
-              <h3 className="text-lg font-bold text-green-400">Resource Received</h3>
-              {contractId && <p className="text-sm text-slate-400">Via {formatAddress(contractId)}</p>}
+              <h3 className="text-lg font-bold text-green-400">Resource received</h3>
+              {txId && (
+                <p className="text-sm text-slate-400">
+                  via tx{' '}
+                  <a
+                    href={`/payment/${txId}`}
+                    className="text-amber-400 hover:underline font-mono"
+                  >
+                    {formatAddress(txId)}
+                  </a>
+                </p>
+              )}
             </div>
           </div>
 
-          {/* Upto billing summary */}
-          {resourceData?.payment?.scheme === 'hathor-escrow-upto' && resourceData?.payment?.chargedAmount != null && (
-            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 mb-4">
-              <div className="text-sm font-medium text-blue-400 mb-2">📊 Usage-Based Settlement</div>
-              <div className="space-y-1 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Max authorized</span>
-                  <span className="text-white">{(parseInt(selectedOption?.price || '0') / 100).toFixed(2)} HTR</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Actually charged</span>
-                  <span className="text-amber-400 font-bold">{(parseInt(resourceData.payment.chargedAmount) / 100).toFixed(2)} HTR</span>
-                </div>
-                {resourceData.payment.refundAmount > 0 && (
+          {paymentInfo?.scheme === 'hathor-direct-upto' &&
+            paymentInfo?.chargedAmount != null && (
+              <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 mb-4">
+                <div className="text-sm font-medium text-blue-400 mb-2">📊 Upto settlement</div>
+                <div className="space-y-1 text-sm">
                   <div className="flex justify-between">
-                    <span className="text-slate-400">Refunded to you</span>
-                    <span className="text-green-400 font-bold">{(parseInt(resourceData.payment.refundAmount) / 100).toFixed(2)} HTR</span>
+                    <span className="text-slate-400">Max authorized</span>
+                    <span className="text-white">{describeAmount(paymentInfo.amount)}</span>
                   </div>
-                )}
-                {resourceData.payment.refundTxId && (
-                  <div className="flex justify-between pt-1 border-t border-slate-700">
-                    <span className="text-slate-400">Refund tx</span>
-                    <span className="text-slate-300 font-mono text-xs">{formatAddress(resourceData.payment.refundTxId)}</span>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Charged</span>
+                    <span className="text-amber-400 font-bold">
+                      {describeAmount(paymentInfo.chargedAmount)}
+                    </span>
                   </div>
-                )}
+                  {paymentInfo.refundAmount && parseInt(paymentInfo.refundAmount, 10) > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Refunded</span>
+                      <span className="text-green-400 font-bold">
+                        {describeAmount(paymentInfo.refundAmount)}
+                      </span>
+                    </div>
+                  )}
+                  {paymentInfo.refundTxId && (
+                    <div className="flex justify-between pt-1 border-t border-slate-700">
+                      <span className="text-slate-400">Refund tx</span>
+                      <span className="text-slate-300 font-mono text-xs">
+                        {formatAddress(paymentInfo.refundTxId)}
+                      </span>
+                    </div>
+                  )}
+                  {paymentInfo.refundError && (
+                    <div className="flex justify-between pt-1 border-t border-slate-700">
+                      <span className="text-slate-400">Refund error</span>
+                      <span className="text-red-400 text-xs">{paymentInfo.refundError}</span>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
           <pre className="bg-slate-900 rounded-lg p-4 text-sm text-slate-300 overflow-x-auto">
-            {JSON.stringify(resourceData.data || resourceData, null, 2)}
+            {JSON.stringify(resourceData, null, 2)}
           </pre>
-          <button onClick={reset} className="mt-4 px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white border border-slate-600 transition-colors">
-            {activeChannel ? 'Fetch again (instant)' : 'Make another request'}
+          <button
+            onClick={reset}
+            className="mt-4 px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white border border-slate-600 transition-colors"
+          >
+            Make another request
           </button>
         </div>
       )}
@@ -462,38 +519,48 @@ export function X402Fetch() {
         <div className="bg-slate-800 rounded-xl border border-red-500/50 p-6">
           <h3 className="text-lg font-bold text-red-400 mb-2">Error</h3>
           <p className="text-slate-300 text-sm mb-4">{error}</p>
-          <button onClick={reset} className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white border border-slate-600 transition-colors">Try again</button>
+          <button
+            onClick={reset}
+            className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white border border-slate-600 transition-colors"
+          >
+            Try again
+          </button>
         </div>
       )}
 
       {/* History */}
       {history.length > 0 && (
         <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
-          <h3 className="text-lg font-bold text-white mb-4">Payment History</h3>
+          <h3 className="text-lg font-bold text-white mb-4">Payment history</h3>
           <div className="space-y-2">
             {history.map((e) => {
-              const badgeClass = e.scheme === 'hathor-channel' ? 'bg-green-500/20 text-green-400'
-                : e.scheme === 'hathor-escrow-upto' ? 'bg-blue-500/20 text-blue-400'
-                : 'bg-amber-500/20 text-amber-400';
-              const badgeLabel = e.scheme === 'hathor-channel' ? 'channel'
-                : e.scheme === 'hathor-escrow-upto' ? 'upto'
-                : 'escrow';
+              const badgeClass =
+                e.scheme === 'hathor-direct-upto'
+                  ? 'bg-blue-500/20 text-blue-400'
+                  : 'bg-amber-500/20 text-amber-400';
+              const badgeLabel = describeScheme(e.scheme);
+              const ts = new Date(e.ts);
               return (
-                <div key={e.id} className="flex items-center justify-between bg-slate-900 rounded-lg p-3">
-                  <div>
-                    <p className="text-white text-sm font-mono">{e.url}</p>
+                <a
+                  key={e.txId}
+                  href={`/payment/${e.txId}`}
+                  className="flex items-center justify-between bg-slate-900 rounded-lg p-3 hover:bg-slate-700/40 transition-colors"
+                >
+                  <div className="min-w-0">
+                    <p className="text-white text-sm font-mono truncate">{e.url}</p>
                     <p className="text-xs text-slate-500">
-                      {e.timestamp.toLocaleTimeString()} — {formatAddress(e.contractId)}
+                      {ts.toLocaleTimeString()} — {formatAddress(e.txId)}
                       {e.chargedAmount != null && (
                         <span className="ml-2 text-blue-400">
-                          charged {(parseInt(e.chargedAmount) / 100).toFixed(2)} HTR
-                          {e.refundAmount && parseInt(e.refundAmount) > 0 && ` · refunded ${(parseInt(e.refundAmount) / 100).toFixed(2)} HTR`}
+                          charged {describeAmount(e.chargedAmount)}
+                          {e.refundAmount && parseInt(e.refundAmount, 10) > 0 &&
+                            ` · refunded ${describeAmount(e.refundAmount)}`}
                         </span>
                       )}
                     </p>
                   </div>
                   <span className={`text-xs px-2 py-1 rounded ${badgeClass}`}>{badgeLabel}</span>
-                </div>
+                </a>
               );
             })}
           </div>

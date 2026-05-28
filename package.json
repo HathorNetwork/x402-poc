@@ -1,7 +1,7 @@
 {
   "name": "x402-poc",
-  "version": "0.1.0",
-  "description": "x402 Payment Protocol POC for Hathor Network — Machine-to-machine payments via HTTP 402 + nano contract escrow",
+  "version": "0.2.0",
+  "description": "x402 Payment Protocol PoC for Hathor Network — hathor-direct scheme (regular UTXO payments, no nano contracts)",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -10,13 +10,15 @@
   "scripts": {
     "facilitator": "node facilitator.js",
     "resource-server": "node resource-server.js",
+    "start": "node resource-server.js",
     "client": "node client.js"
   },
   "dependencies": {
-    "express": "^4.21.0",
-    "node-fetch": "^2.7.0"
+    "@hathor/wallet-lib": "^2.17.0",
+    "better-sqlite3": "^11.5.0",
+    "express": "^4.21.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   }
 }

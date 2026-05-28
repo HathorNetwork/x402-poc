@@ -1,183 +1,208 @@
-// x402 Resource Server (Seller)
-// A simple API server that sells:
-//   GET /weather  -> exact scheme (hathor-escrow / hathor-channel)
-//   GET /generate -> upto scheme (hathor-escrow-upto) — usage-billed (simulated LLM)
-// Supports HTR and custom tokens
+// x402 Resource Server — sells two routes:
+//   GET /weather  — hathor-direct (exact)
+//   GET /generate — hathor-direct-upto (max-authorize, refund remainder)
+//
+// Self-verifies via verifier.js by default (VERIFY_MODE=self) so a public
+// facilitator is optional. When VERIFY_MODE=facilitator it POSTs to the
+// configured facilitator URL instead.
+
+'use strict';
 
 const express = require('express');
-const fetch = require('node-fetch');
 const config = require('./config');
 const { log } = require('./helpers');
+const { openStore } = require('./dedupStore');
+const { mintRequestId } = require('./requestId');
+const { verifyDirectPayment } = require('./verifier');
+const { watchForVoid } = require('./voidWatcher');
+const { issueRefund } = require('./refundIssuer');
 
+if (!config.sellerAddress) {
+  log('RESOURCE-SERVER', 'WARNING: SELLER_ADDRESS not set — 402 responses will be invalid');
+}
+if (!config.serverSecret) {
+  log('RESOURCE-SERVER', 'WARNING: SERVER_SECRET not set — requestIds will be unverifiable');
+}
+
+const store = openStore(config.dedupDbPath);
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '32kb' }));
 
-// CORS — allow browser dApps to call this server
+// CORS — open for the dApp + curl tests.
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, PAYMENT-SIGNATURE, X-Payment');
-  res.header('Access-Control-Expose-Headers', 'PAYMENT-RESPONSE, X-Payment-Response');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, PAYMENT-SIGNATURE');
+  res.header('Access-Control-Expose-Headers', 'PAYMENT-RESPONSE');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
-// Build the list of accepted payment options for a route.
-// `routeConfig` describes the pricing mode for that route:
-//   { mode: 'exact', price }          -> one-shot escrow or channel
-//   { mode: 'upto',  maxPrice }       -> upto-scheme escrow (server settles actual usage)
-function buildAcceptsList(path, routeConfig) {
-  const baseExtra = {
-    facilitatorUrl: config.facilitatorPublicUrl,
-    facilitatorAddress: config.facilitatorAddress,
-    deadlineSeconds: config.escrowDeadlineSeconds,
-  };
+// ---------------------------------------------------------------------------
+// 402 building
+// ---------------------------------------------------------------------------
 
-  const accepts = [];
+function networkId() {
+  return `hathor:${config.network}`;
+}
 
-  if (routeConfig.mode === 'upto') {
-    // Usage-based: client authorizes up to maxPrice, server settles actual usage.
-    accepts.push({
-      scheme: 'hathor-escrow-upto',
-      network: `hathor:${config.network}`,
-      resource: `${config.resourceServerPublicUrl}${path}`,
-      mimeType: 'application/json',
+function buildAccept(req, routeConfig) {
+  const resourceUrl = `${config.resourceServerPublicUrl}${req.path}`;
+  const amount = String(routeConfig.mode === 'upto' ? routeConfig.maxPrice : routeConfig.price);
+  const scheme = routeConfig.mode === 'upto' ? 'hathor-direct-upto' : 'hathor-direct';
+
+  // Mint a fresh, server-issued challenge token. The HMAC commitments include
+  // the route, amount, and payTo so a payment claim later can't be redirected.
+  const requestId = mintRequestId(
+    {
+      route: resourceUrl,
+      amount,
       payTo: config.sellerAddress,
-      maxTimeoutSeconds: config.escrowDeadlineSeconds,
       asset: config.htrTokenUid,
-      price: String(routeConfig.maxPrice),
-      description: `Pay up to ${(routeConfig.maxPrice / 100).toFixed(2)} HTR — billed by actual usage`,
-      extra: { ...baseExtra, blueprintId: config.blueprintId, pricing: 'upto' },
-    });
-    return accepts;
-  }
+      network: networkId(),
+    },
+    config.serverSecret || 'dev-fallback-secret',
+    config.requestIdTtlSeconds
+  );
 
-  // Default: exact pricing (escrow + optional channel)
-  const price = routeConfig.price;
+  const description = routeConfig.mode === 'upto'
+    ? `Pay up to ${(routeConfig.maxPrice / 100).toFixed(2)} HTR — billed by actual usage, remainder refunded`
+    : `Pay ${(routeConfig.price / 100).toFixed(2)} HTR`;
 
-  accepts.push({
-    scheme: 'hathor-escrow',
-    network: `hathor:${config.network}`,
-    resource: `${config.resourceServerPublicUrl}${path}`,
-    mimeType: 'application/json',
-    payTo: config.sellerAddress,
-    maxTimeoutSeconds: config.escrowDeadlineSeconds,
+  return {
+    scheme,
+    network: networkId(),
+    amount,
     asset: config.htrTokenUid,
-    price: String(price),
-    description: `Pay ${(price / 100).toFixed(2)} HTR (single escrow)`,
-    extra: { ...baseExtra, blueprintId: config.blueprintId, pricing: 'exact' },
-  });
-
-  if (config.channelBlueprintId) {
-    accepts.push({
-      scheme: 'hathor-channel',
-      network: `hathor:${config.network}`,
-      resource: `${config.resourceServerPublicUrl}${path}`,
-      mimeType: 'application/json',
-      payTo: config.sellerAddress,
-      maxTimeoutSeconds: config.escrowDeadlineSeconds,
-      asset: config.htrTokenUid,
-      price: String(price),
-      description: `Pay ${(price / 100).toFixed(2)} HTR via channel (saves escrow creation)`,
-      extra: { ...baseExtra, channelBlueprintId: config.channelBlueprintId, pricing: 'exact' },
-    });
-  }
-
-  return accepts;
-}
-
-// Handlers call res.setSettlementOverrides({ amount }) during request processing
-// to specify the actual amount to charge in the "upto" scheme. Ignored by "exact".
-function setSettlementOverrides(res, overrides) {
-  res.locals.x402SettlementOverrides = {
-    ...(res.locals.x402SettlementOverrides || {}),
-    ...overrides,
+    payTo: config.sellerAddress,
+    resource: resourceUrl,
+    maxTimeoutSeconds: config.requestIdTtlSeconds,
+    description,
+    extra: {
+      requestId,
+      facilitatorUrl: config.verifyMode === 'facilitator' ? config.facilitatorUrl : undefined,
+    },
   };
 }
 
-// Factory: build a middleware that verifies payment up-front and defers
-// settlement until after the route handler has finished (so handlers can
-// call setSettlementOverrides() for the "upto" scheme).
+function build402Body(req, routeConfig) {
+  return {
+    x402Version: 2,
+    accepts: [buildAccept(req, routeConfig)],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Verify — either local (verifier.js) or via the standalone facilitator
+// ---------------------------------------------------------------------------
+
+async function runVerify(paymentPayload, requirement) {
+  if (config.verifyMode === 'facilitator') {
+    const resp = await fetch(`${config.facilitatorUrl}/x402/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paymentPayload, paymentRequirements: requirement }),
+    });
+    return resp.json();
+  }
+  return verifyDirectPayment({
+    payload: paymentPayload,
+    requirements: requirement,
+    fullnodeUrl: config.fullnodeUrl,
+    dedupStore: store,
+    serverSecret: config.serverSecret,
+    zeroConfMaxAmount: config.zeroConfMaxAmount,
+  });
+}
+
+// Handlers call `setUptoChargedAmount(res, n)` from inside the route to tell
+// the middleware what actually to charge (in atomic units). Ignored by the
+// exact scheme.
+function setUptoChargedAmount(res, amount) {
+  res.locals.x402UptoCharged = amount;
+}
+
+// ---------------------------------------------------------------------------
+// Middleware
+// ---------------------------------------------------------------------------
+
 function x402Middleware(routeConfig) {
-  const paymentRequirements = buildAcceptsList('', routeConfig).map(opt => ({
-    scheme: opt.scheme,
-    network: opt.network,
-    maxAmountRequired: opt.price,
-    payTo: opt.payTo,
-    asset: opt.asset,
-  }));
-
-  return async function (req, res, next) {
-    // x402 V2: PAYMENT-SIGNATURE (Base64-encoded JSON), fallback to X-Payment (raw JSON) for backward compat
+  return async function middleware(req, res, next) {
     const signatureHeader = req.headers['payment-signature'];
-    const legacyHeader = req.headers['x-payment'];
 
-    if (!signatureHeader && !legacyHeader) {
-      log('RESOURCE-SERVER', `402 — No payment for ${req.path}`);
-      return res.status(402).json({
-        x402Version: 2,
-        accepts: buildAcceptsList(req.path, routeConfig),
-      });
+    if (!signatureHeader) {
+      log('RESOURCE-SERVER', `402 — no PAYMENT-SIGNATURE for ${req.path}`);
+      return res.status(402).json(build402Body(req, routeConfig));
     }
 
     let payment;
     try {
-      payment = signatureHeader
-        ? JSON.parse(Buffer.from(signatureHeader, 'base64').toString('utf-8'))
-        : JSON.parse(legacyHeader);
-    } catch (err) {
-      return res.status(400).json({ error: 'Invalid PAYMENT-SIGNATURE header' });
+      payment = JSON.parse(Buffer.from(signatureHeader, 'base64').toString('utf-8'));
+    } catch (_) {
+      return res.status(400).json({ error: 'invalid_payment_signature_header' });
     }
 
-    const scheme = payment.scheme;
-    const isChannel = scheme === 'hathor-channel';
-    const isUpto = scheme === 'hathor-escrow-upto';
-    const id = isChannel ? payment.payload.channelId : payment.payload.ncId;
+    // Re-issue a requestId-bound requirement so the verifier checks against
+    // the canonical route values, not anything the client could spoof.
+    const requirement = (() => {
+      const accept = buildAccept(req, routeConfig);
+      // Verifier uses what the payload claims and re-checks the HMAC; we just
+      // pass the canonical route/payTo/amount/asset/network back in.
+      return {
+        scheme: accept.scheme,
+        network: accept.network,
+        amount: accept.amount,
+        asset: accept.asset,
+        payTo: accept.payTo,
+        resource: accept.resource,
+      };
+    })();
 
-    log('RESOURCE-SERVER', `Verifying ${scheme} payment id=${id}`);
-
-    // Step 1: Verify with facilitator (up-front, before running the handler)
-    const verifyResp = await fetch(`${config.facilitatorUrl}/x402/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paymentPayload: payment, paymentRequirements }),
-    });
-    const verification = await verifyResp.json();
+    log('RESOURCE-SERVER', `verifying ${payment.scheme} for ${req.path}`);
+    let verification;
+    try {
+      verification = await runVerify(payment, requirement);
+    } catch (err) {
+      log('RESOURCE-SERVER', `verify error: ${err.message}`);
+      return res.status(502).json({ error: 'verify_failed', reason: err.message });
+    }
 
     if (!verification.valid) {
-      log('RESOURCE-SERVER', `Payment INVALID: ${verification.invalidReason}`);
-      return res.status(402).json({ error: 'Payment invalid', reason: verification.invalidReason });
+      log('RESOURCE-SERVER', `payment INVALID: ${verification.invalidReason}`);
+      return res.status(402).json({
+        error: 'payment_invalid',
+        reason: verification.invalidReason,
+        ...build402Body(req, routeConfig),
+      });
     }
-    log('RESOURCE-SERVER', `Payment VALID`);
 
-    // Stash context for post-handler settlement
-    res.locals.x402 = { payment, scheme, isChannel, isUpto, id, routeConfig };
+    log('RESOURCE-SERVER', `payment VALID — tx=${verification.txId} idempotent=${!!verification.idempotent}`);
+    res.locals.x402 = { payment, verification, routeConfig, requirement };
 
-    // Hook res.json so we can settle AFTER the handler finishes building its payload.
-    // This lets "upto" handlers compute actual usage and call setSettlementOverrides().
+    // Hook res.json to settle (refund) AFTER the handler has produced a body
+    // so /generate can call setUptoChargedAmount() to specify actual usage.
     const originalJson = res.json.bind(res);
-    res.json = async function (body) {
-      // Only settle on 2xx responses — skip if the handler returned an error.
-      if (res.statusCode >= 400) {
-        return originalJson(body);
-      }
+    res.json = async function patched(body) {
       try {
-        const { chargedAmount, settlement } = await settlePayment(res);
-        const paymentResponse = {
-          x402Version: 2,
-          success: true,
-          scheme,
-          network: `hathor:${config.network}`,
-          ...(isChannel ? { channelId: id } : { ncId: id }),
-          settleTxId: settlement.txId,
-          ...(isUpto ? { chargedAmount, refundAmount: settlement.refundAmount, refundTxId: settlement.refundTxId } : {}),
-        };
-        res.set('PAYMENT-RESPONSE', Buffer.from(JSON.stringify(paymentResponse)).toString('base64'));
+        const { paymentResponse } = await finalizeUpto(res);
+        if (paymentResponse) {
+          res.set('PAYMENT-RESPONSE', Buffer.from(JSON.stringify(paymentResponse)).toString('base64'));
+        }
+        // Start the void watcher only after we've committed to the response
+        // (so a verification failure doesn't accidentally arm one).
+        if (!verification.idempotent) {
+          watchForVoid({
+            txId: verification.txId,
+            outputIndex: verification.outputIndex,
+            payerAddress: verification.payerAddress,
+            store,
+            log,
+          });
+        }
         return originalJson({ data: body, payment: paymentResponse });
       } catch (err) {
-        log('RESOURCE-SERVER', `Settlement FAILED: ${err.message}`);
-        // Use originalJson directly to avoid recursion through the wrapped res.json
+        log('RESOURCE-SERVER', `settlement failed: ${err.message}`);
         res.status(500);
-        return originalJson({ error: 'Settlement failed', reason: err.message });
+        return originalJson({ error: 'settlement_failed', reason: err.message });
       }
     };
 
@@ -185,92 +210,148 @@ function x402Middleware(routeConfig) {
   };
 }
 
-// Internal: call the facilitator to settle. Picks the right shape based on scheme.
-async function settlePayment(res) {
-  const { payment, scheme, isChannel, isUpto, id, routeConfig } = res.locals.x402;
-  const overrides = res.locals.x402SettlementOverrides || {};
+async function finalizeUpto(res) {
+  const ctx = res.locals.x402;
+  const { payment, verification, routeConfig } = ctx;
+  const scheme = payment.scheme;
+  const paidAmount = Number(verification.paidAmount);
 
-  const settleBody = { paymentPayload: payment };
-  let chargedAmount;
-
-  if (isChannel) {
-    settleBody.amount = routeConfig.price;
-    settleBody.sellerAddress = config.sellerAddress;
-    chargedAmount = routeConfig.price;
-  } else if (isUpto) {
-    // Handler MUST call setSettlementOverrides({ amount }) — otherwise charge the full max.
-    chargedAmount = overrides.amount != null ? parseInt(overrides.amount) : routeConfig.maxPrice;
-    if (chargedAmount > routeConfig.maxPrice) chargedAmount = routeConfig.maxPrice;
-    if (chargedAmount < 1) chargedAmount = 1;
-    settleBody.chargedAmount = chargedAmount;
-  } else {
-    chargedAmount = routeConfig.price;
+  // Exact scheme — no refund, simple PAYMENT-RESPONSE.
+  if (scheme === 'hathor-direct') {
+    return {
+      paymentResponse: {
+        x402Version: 2,
+        success: true,
+        scheme,
+        network: `hathor:${config.network}`,
+        transaction: verification.txId,
+        amount: String(paidAmount),
+        payer: verification.payerAddress,
+      },
+    };
   }
 
-  log('RESOURCE-SERVER', `Settling ${scheme} id=${id}${isUpto ? ` chargedAmount=${chargedAmount}` : ''}`);
-  const settleResp = await fetch(`${config.facilitatorUrl}/x402/settle`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settleBody),
-  });
-  const settlement = await settleResp.json();
+  // Upto scheme — clamp charged amount and issue a refund tx if there's
+  // remainder. Handler should have called setUptoChargedAmount(res, n).
+  let charged = Number(res.locals.x402UptoCharged);
+  if (!Number.isFinite(charged) || charged <= 0) charged = paidAmount; // default to full
+  if (charged > paidAmount) charged = paidAmount;
+  const refund = paidAmount - charged;
 
-  if (!settlement.success) {
-    throw new Error(settlement.error || 'settle failed');
+  let refundTxId = null;
+  let refundError = null;
+
+  if (refund > 0) {
+    try {
+      const r = await issueRefund({
+        sellerWalletUrl: config.sellerWalletUrl,
+        sellerWalletId: config.sellerWalletId,
+        refundAddress: verification.payerAddress,
+        amount: refund,
+        asset: verification.asset,
+        log,
+      });
+      refundTxId = r.txId;
+    } catch (err) {
+      refundError = err.message;
+      log('RESOURCE-SERVER', `refund FAILED: ${err.message}`);
+    }
   }
-  log('RESOURCE-SERVER', `Settlement confirmed — txId=${settlement.txId}`);
-  return { chargedAmount, settlement };
+
+  // Best-effort persistence of the upto settlement on the dedup row.
+  try {
+    store.attachUptoSettlement(
+      verification.txId,
+      verification.outputIndex,
+      charged,
+      refundTxId
+    );
+  } catch (_) { /* don't block the response on accounting */ }
+
+  return {
+    paymentResponse: {
+      x402Version: 2,
+      success: true,
+      scheme,
+      network: `hathor:${config.network}`,
+      transaction: verification.txId,
+      amount: String(paidAmount),
+      chargedAmount: String(charged),
+      refundAmount: String(refund),
+      refundTxId,
+      refundError,
+      payer: verification.payerAddress,
+    },
+  };
 }
 
-// ----- Routes -----
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
 
-// EXACT scheme: classic fixed-price endpoint
-app.get('/weather', x402Middleware({ mode: 'exact', price: config.htrPaymentAmount }), async (req, res) => {
-  const weatherData = {
-    location: 'Sao Paulo, Brazil',
-    temperature: 28,
-    humidity: 65,
-    condition: 'Partly cloudy',
-    wind: '12 km/h NE',
-    forecast: 'Warm with chance of afternoon showers',
-    timestamp: new Date().toISOString(),
-  };
-  res.json(weatherData);
-});
+// Exact: GET /weather
+app.get(
+  '/weather',
+  x402Middleware({ mode: 'exact', price: config.htrPaymentAmount }),
+  async (_req, res) => {
+    res.json({
+      location: 'Sao Paulo, Brazil',
+      temperature: 28,
+      humidity: 65,
+      condition: 'Partly cloudy',
+      wind: '12 km/h NE',
+      forecast: 'Warm with chance of afternoon showers',
+      timestamp: new Date().toISOString(),
+    });
+  }
+);
 
-// UPTO scheme: usage-based endpoint (simulated LLM generation)
-// Client authorizes up to `maxPrice`; server charges based on tokens actually generated.
-const GENERATE_MAX_PRICE = parseInt(process.env.GENERATE_MAX_PRICE || '500'); // 5.00 HTR
-const GENERATE_PRICE_PER_TOKEN = 1; // 0.01 HTR per token generated
+// Upto: GET /generate — simulated LLM with variable usage
+const GENERATE_PRICE_PER_TOKEN = 1; // 0.01 HTR per token
 
-app.get('/generate', x402Middleware({ mode: 'upto', maxPrice: GENERATE_MAX_PRICE }), async (req, res) => {
-  // Simulate variable LLM token usage between 50 and GENERATE_MAX_PRICE/PRICE_PER_TOKEN tokens
-  const maxTokens = Math.floor(GENERATE_MAX_PRICE / GENERATE_PRICE_PER_TOKEN);
-  const tokensUsed = Math.floor(50 + Math.random() * (maxTokens - 50));
-  const actualCost = tokensUsed * GENERATE_PRICE_PER_TOKEN;
+app.get(
+  '/generate',
+  x402Middleware({ mode: 'upto', maxPrice: config.generateMaxPrice }),
+  async (req, res) => {
+    const maxTokens = Math.floor(config.generateMaxPrice / GENERATE_PRICE_PER_TOKEN);
+    const tokensUsed = Math.floor(50 + Math.random() * Math.max(1, maxTokens - 50));
+    const actualCost = Math.max(1, tokensUsed * GENERATE_PRICE_PER_TOKEN);
 
-  // Tell the middleware how much to actually charge
-  setSettlementOverrides(res, { amount: actualCost });
+    // Tell the middleware what to actually charge.
+    setUptoChargedAmount(res, actualCost);
 
-  const prompt = req.query.prompt || 'default prompt';
+    const prompt = req.query.prompt || 'default prompt';
+    res.json({
+      prompt,
+      completion: `Generated response for: "${prompt}". This mock simulates variable-length LLM output billed per token.`,
+      usage: {
+        tokensUsed,
+        pricePerToken: GENERATE_PRICE_PER_TOKEN,
+        authorizedMaxAtomic: config.generateMaxPrice,
+        actualChargedAtomic: actualCost,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+);
+
+app.get('/health', (_req, res) => {
   res.json({
-    prompt,
-    completion: `Generated response for: "${prompt}". This mock response simulates variable-length LLM output billed per token.`,
-    usage: {
-      tokensUsed,
-      pricePerToken: GENERATE_PRICE_PER_TOKEN,
-      authorizedMaxAtomic: GENERATE_MAX_PRICE,
-      actualChargedAtomic: actualCost,
-    },
-    timestamp: new Date().toISOString(),
+    status: 'healthy',
+    seller: config.sellerAddress,
+    verifyMode: config.verifyMode,
+    network: config.network,
+    dedup: store.stats(),
+    uptime: process.uptime(),
   });
 });
 
 app.listen(config.resourceServerPort, () => {
-  log('RESOURCE-SERVER', `Paid API running on port ${config.resourceServerPort}`);
-  log('RESOURCE-SERVER', `Seller address: ${config.sellerAddress}`);
+  log('RESOURCE-SERVER', `Running on :${config.resourceServerPort}`);
+  log('RESOURCE-SERVER', `Seller address: ${config.sellerAddress || '(unset)'}`);
+  log('RESOURCE-SERVER', `Verify mode: ${config.verifyMode}${config.verifyMode === 'facilitator' ? ` (${config.facilitatorUrl})` : ''}`);
+  log('RESOURCE-SERVER', `Dedup store: ${config.dedupDbPath}`);
   log('RESOURCE-SERVER', `Routes:`);
-  log('RESOURCE-SERVER', `  GET /weather  — exact:  ${(config.htrPaymentAmount / 100).toFixed(2)} HTR`);
-  log('RESOURCE-SERVER', `  GET /generate — upto:   up to ${(GENERATE_MAX_PRICE / 100).toFixed(2)} HTR (usage-billed)`);
-  log('RESOURCE-SERVER', `Schemes: hathor-escrow${config.channelBlueprintId ? ' + hathor-channel' : ''} + hathor-escrow-upto`);
+  log('RESOURCE-SERVER', `  GET /weather  — exact: ${(config.htrPaymentAmount / 100).toFixed(2)} HTR`);
+  log('RESOURCE-SERVER', `  GET /generate — upto:  up to ${(config.generateMaxPrice / 100).toFixed(2)} HTR (usage-billed)`);
 });
