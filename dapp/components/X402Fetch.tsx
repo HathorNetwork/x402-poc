@@ -223,7 +223,10 @@ export function X402Fetch() {
         );
       }
 
-      // Retry the original GET with the proof header.
+      // Retry the original GET with the proof header. The verifier expects a
+      // multi-signature payload (one {address, signature} entry per unique
+      // input address). The dApp constrains inputs to address-0, so the array
+      // is always length 1.
       setStep('retrying');
       const payload = {
         x402Version: 2,
@@ -231,8 +234,9 @@ export function X402Fetch() {
         network: opt.network,
         payload: {
           txId: sentTxId,
-          payerAddress: signed.address.address,
-          signature: signed.signature,
+          signatures: [
+            { address: signed.address.address, signature: signed.signature },
+          ],
           requestId: opt.extra.requestId,
         },
       };

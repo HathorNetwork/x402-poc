@@ -20,6 +20,22 @@ function fail(reason) {
 // `requirements` is one PaymentRequirements (object) describing the route the
 // client is trying to satisfy: { scheme, network, amount, asset, payTo, resource }.
 // `payload` is the decoded PAYMENT-SIGNATURE payload from the client.
+//
+// Payload shape (multi-signature; no legacy single-sig back-compat):
+//   {
+//     x402Version: 2, scheme, network,
+//     payload: {
+//       txId,
+//       signatures: [{address, signature}, ...],   // one entry per unique tx input address
+//       requestId,
+//     }
+//   }
+//
+// The verifier requires every unique input address in the tx to be present in
+// `signatures` with a signature that verifies over `requestId`. That proves the
+// claimant controls every funding source of the payment. The "canonical payer"
+// (for blocklist / dedup record / upto refund target) is the address of the
+// FIRST entry in `signatures` — client controls the ordering.
 async function verifyDirectPayment({
   payload,
   requirements,
@@ -29,10 +45,20 @@ async function verifyDirectPayment({
   zeroConfMaxAmount = Number.MAX_SAFE_INTEGER,
 }) {
   if (!payload || typeof payload !== 'object') return fail('missing_payload');
-  const { txId, payerAddress, signature, requestId } = payload.payload || {};
-  if (!txId || !payerAddress || !signature || !requestId) {
-    return fail('missing_payload_fields');
+  const inner = payload.payload || {};
+  const { txId, signatures, requestId } = inner;
+  if (!txId || !requestId) return fail('missing_payload_fields');
+  if (!Array.isArray(signatures) || signatures.length === 0) {
+    return fail('missing_signatures');
   }
+
+  // Canonical payer = first signature's address. Used for blocklist, dedup
+  // record and upto refund recipient.
+  const firstSig = signatures[0];
+  if (!firstSig || typeof firstSig.address !== 'string' || typeof firstSig.signature !== 'string') {
+    return fail('malformed_signatures');
+  }
+  const payerAddress = firstSig.address;
 
   // 1) requestId — HMAC + expiry + commitment match against the route.
   const decoded = verifyAndDecodeRequestId(requestId, serverSecret, {
@@ -63,21 +89,36 @@ async function verifyDirectPayment({
   });
   if (!paying) return fail('no_paying_output');
 
-  // 4) The address that signed `requestId` must appear as a TX INPUT — i.e.,
-  // it actually contributed UTXOs to the payment. Accepting output addresses
-  // would let any recipient of the tx (or any third-party output owner)
-  // claim the resource. Inputs are the only set that proves payment ownership.
+  // 4) Build a map of {address → signature} from the payload. Reject
+  // duplicate addresses with conflicting signatures (defensive — the wallet
+  // shouldn't produce these, but we don't trust the wire).
+  const sigByAddr = new Map();
+  for (const entry of signatures) {
+    if (!entry || typeof entry.address !== 'string' || typeof entry.signature !== 'string') {
+      return fail('malformed_signatures');
+    }
+    const prev = sigByAddr.get(entry.address);
+    if (prev && prev !== entry.signature) return fail('duplicate_signatures');
+    sigByAddr.set(entry.address, entry.signature);
+  }
+
+  // 5) Every unique input address must be present in the signatures map
+  // AND its signature must verify. That's what "the claimant controls
+  // every funding source" cryptographically reduces to.
   const inAddrs = getInputAddresses(tx);
-  if (!inAddrs.has(payerAddress)) {
-    return fail('payer_not_in_tx_inputs');
+  if (inAddrs.size === 0) return fail('no_input_addresses');
+
+  for (const inAddr of inAddrs) {
+    const sig = sigByAddr.get(inAddr);
+    if (!sig) return fail(`missing_signature_for_input:${inAddr}`);
+    if (!verifyMessageSignature(requestId, sig, inAddr)) {
+      return fail(`bad_signature:${inAddr}`);
+    }
   }
 
-  // 5) The signature must verify against the payer's address.
-  if (!verifyMessageSignature(requestId, signature, payerAddress)) {
-    return fail('bad_signature');
-  }
-
-  // 6) Blocklist: payers caught double-spending earlier are refused.
+  // 6) Blocklist: payers caught double-spending earlier are refused. The
+  // canonical payer (first signature) is the one we blocklist on void, so we
+  // check that address here.
   if (dedupStore && dedupStore.isBlocked(payerAddress)) {
     return fail('blocklisted');
   }
@@ -100,7 +141,8 @@ async function verifyDirectPayment({
   }
 
   // 9) Atomic dedup. This both detects replays and is the on-disk record of
-  // the redemption.
+  // the redemption. We key dedup on (txId, outputIndex) and record the
+  // canonical payer (first signature address).
   const dedup = dedupStore.markRedeemedIfFree(
     { txId, outputIndex: paying.outputIndex },
     {
@@ -118,7 +160,7 @@ async function verifyDirectPayment({
     valid: true,
     txId,
     outputIndex: paying.outputIndex,
-    payerAddress,
+    payerAddress, // first signature's address — used for refund target etc.
     amount: String(paying.value),
     paidAmount: String(paying.value),
     asset: paying.token,

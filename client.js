@@ -119,14 +119,16 @@ async function pay(wallet, accept) {
 }
 
 async function retry(accept, { txId, payerAddress, signature }) {
+  // Multi-signature payload: one {address, signature} entry per unique input
+  // address of the on-chain tx. The CLI uses address-0 (getCurrentAddress on
+  // a fresh wallet returns index 0), so the array is length 1.
   const payload = {
     x402Version: 2,
     scheme: accept.scheme,
     network: accept.network,
     payload: {
       txId,
-      payerAddress,
-      signature,
+      signatures: [{ address: payerAddress, signature }],
       requestId: accept.extra.requestId,
     },
   };
