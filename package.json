@@ -1,0 +1,24 @@
+{
+  "name": "x402-poc",
+  "version": "0.2.0",
+  "description": "x402 Payment Protocol PoC for Hathor Network — hathor-direct scheme (regular UTXO payments, no nano contracts)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HathorNetwork/x402-poc.git"
+  },
+  "scripts": {
+    "facilitator": "node facilitator.js",
+    "resource-server": "node resource-server.js",
+    "start": "node resource-server.js",
+    "client": "node client.js"
+  },
+  "dependencies": {
+    "@hathor/wallet-lib": "^2.17.0",
+    "better-sqlite3": "^11.5.0",
+    "express": "^4.21.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

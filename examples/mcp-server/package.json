@@ -1,0 +1,19 @@
+{
+  "name": "x402-mcp-server-example",
+  "version": "0.2.0",
+  "description": "Example MCP server with x402 hathor-direct payment-gated tools",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "better-sqlite3": "^11.5.0",
+    "@hathor/wallet-lib": "^2.17.0",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
