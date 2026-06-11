@@ -12,7 +12,7 @@ export function ResponseCard() {
       className="bg-slate-800 rounded-xl border border-slate-700 p-5"
     >
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-        <h3 className="text-lg font-bold text-white">Response</h3>
+        <h3 className="text-lg font-bold text-white">Task result</h3>
         {response && (
           <div className="flex items-center gap-2">
             <span className="text-xs px-2.5 py-1 rounded-full bg-slate-700 text-slate-300">

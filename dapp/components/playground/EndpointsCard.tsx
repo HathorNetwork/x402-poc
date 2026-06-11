@@ -9,7 +9,9 @@ export function EndpointsCard() {
 
   return (
     <div data-tour="endpoints" className="rounded-xl">
-      <h3 className="text-lg font-bold text-white mb-1">Merchant Endpoints</h3>
+      <h3 className="text-lg font-bold text-white mb-1">
+        Ask an AI agent to complete a task
+      </h3>
       <p className="text-xs text-slate-400 mb-4">
         APIs with per-request pricing via x402
       </p>
@@ -63,7 +65,7 @@ export function EndpointsCard() {
             Executing...
           </span>
         ) : (
-          'Send Request'
+          'Execute task'
         )}
       </button>
     </div>

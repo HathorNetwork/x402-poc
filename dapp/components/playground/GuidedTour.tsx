@@ -34,7 +34,7 @@ const TOUR_STEPS: TourStep[] = [
   },
   {
     target: 'send',
-    title: 'Send the Request',
+    title: 'Execute the Task',
     body: 'When the agent calls this endpoint, the x402 client handles everything: detects the 402 challenge, signs an HTR payment, and resubmits the request — all in one fetch() call.',
     action: 'run-request',
   },

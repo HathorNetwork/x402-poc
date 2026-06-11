@@ -27,13 +27,10 @@ function PlaygroundPage() {
       <div className="container mx-auto px-6 py-6 max-w-[1600px]">
         {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-4 mb-6">
-          <div>
-            <h1 className="text-3xl font-bold text-white">Agent Playground</h1>
-            <p className="text-slate-400 mt-1">
-              Simulate how an AI agent interacts with paid API endpoints using the
-              x402 protocol on Hathor
-            </p>
-          </div>
+          <p className="text-xl text-slate-300">
+            Simulate how an AI agent interacts with paid API endpoints using the
+            x402 protocol on Hathor
+          </p>
           <button
             onClick={startTour}
             disabled={tourIndex !== null}

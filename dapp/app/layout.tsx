@@ -12,7 +12,10 @@ export const metadata: Metadata = {
   description:
     'Simulate how an AI agent interacts with paid API endpoints using the x402 protocol on Hathor',
   icons: {
-    icon: '/images/icon.png',
+    icon: [
+      { url: '/images/hathor-icon-light.png', media: '(prefers-color-scheme: light)' },
+      { url: '/images/hathor-icon-dark.png', media: '(prefers-color-scheme: dark)' },
+    ],
   },
 };
 

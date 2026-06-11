@@ -45,7 +45,9 @@ export function PaymentFlowCard() {
       data-tour="flow"
       className="bg-slate-800 rounded-xl border border-slate-700 p-5"
     >
-      <h3 className="text-lg font-bold text-white mb-4">x402 Payment Flow</h3>
+      <h3 className="text-lg font-bold text-white mb-4">
+        Watch an AI agent pay for a service
+      </h3>
 
       {flowSteps.length === 0 ? (
         <div className="py-16 text-center">
