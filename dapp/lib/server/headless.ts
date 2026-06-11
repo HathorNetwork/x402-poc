@@ -115,7 +115,10 @@ export async function getWalletState(): Promise<{ state: WalletState; detail?: s
   }
   return {
     state: 'error',
-    detail: status.message || `Wallet '${serverEnv.walletId}' not started on headless`,
+    detail:
+      `Wallet '${serverEnv.walletId}' is not started on the headless and ` +
+      'HEADLESS_SEED is not set, so it cannot be auto-started. Set ' +
+      'HEADLESS_WALLET_ID + HEADLESS_SEED (24 words) in the deployment env.',
   };
 }
 
