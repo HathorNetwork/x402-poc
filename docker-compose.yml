@@ -31,7 +31,10 @@ services:
   # SECURITY: intentionally NO published ports — the headless has no auth, so
   # it must only be reachable on the internal compose network.
   payer-wallet-headless:
-    image: hathornetwork/hathor-wallet-headless:latest
+    # :master, not :latest — the /wallet/sign-message endpoint the x402 proof
+    # needs is only on the headless master branch (no release ships it yet).
+    # Switch back to a version tag once a release includes sign-message.
+    image: hathornetwork/hathor-wallet-headless:master
     pull_policy: always
     environment:
       HEADLESS_HTTP_BIND: "0.0.0.0"
