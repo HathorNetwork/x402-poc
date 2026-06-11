@@ -8,8 +8,9 @@ import { ToastProvider, Toaster } from '@/lib/toast';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'x402 Client — Hathor',
-  description: 'x402 hathor-direct payment client (regular UTXO payments, no nano contracts)',
+  title: 'x402 Agent Playground — Hathor',
+  description:
+    'Simulate how an AI agent interacts with paid API endpoints using the x402 protocol on Hathor',
   icons: {
     icon: '/images/icon.png',
   },

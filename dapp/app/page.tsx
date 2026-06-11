@@ -1,93 +1,85 @@
 'use client';
 
-import { useState } from 'react';
-import { useWallet } from '@/contexts/WalletContext';
-import { useHathor } from '@/contexts/HathorContext';
-import Header from '@/components/Header';
-import BalanceCard from '@/components/BalanceCard';
-import { WalletConnectionModal } from '@/components/WalletConnectionModal';
-import { X402Fetch } from '@/components/X402Fetch';
-import { formatAddress } from '@/lib/utils';
+import { useEffect } from 'react';
+import { PlaygroundProvider, usePlayground } from '@/contexts/PlaygroundContext';
+import { AgentConfigCard } from '@/components/playground/AgentConfigCard';
+import { SpendTrackerCard } from '@/components/playground/SpendTrackerCard';
+import { EndpointsCard } from '@/components/playground/EndpointsCard';
+import { ResponseCard } from '@/components/playground/ResponseCard';
+import { PaymentFlowCard } from '@/components/playground/PaymentFlowCard';
+import { GuidedTour } from '@/components/playground/GuidedTour';
 
-export default function Home() {
-  const { address } = useWallet();
-  const { network, isConnected } = useHathor();
-  const [showWalletModal, setShowWalletModal] = useState(false);
+const TOUR_SEEN_KEY = 'x402_playground_tour_seen';
+
+function PlaygroundPage() {
+  const { startTour, tourIndex } = usePlayground();
+
+  // Auto-start the guided tour on first visit.
+  useEffect(() => {
+    if (!localStorage.getItem(TOUR_SEEN_KEY)) {
+      localStorage.setItem(TOUR_SEEN_KEY, '1');
+      startTour();
+    }
+  }, [startTour]);
 
   return (
     <div className="min-h-screen bg-slate-900">
-      <Header appName="x402 Client" />
-
-      <main className="container mx-auto px-6 py-8 max-w-4xl">
-        {/* Hero */}
-        <div className="mb-8 text-center">
-          <h2 className="text-4xl font-bold text-white mb-3">x402 Payment Client</h2>
-          <p className="text-slate-400 text-lg">
-            Access paid HTTP APIs on Hathor Network — regular UTXO payments, no nano contracts.
-          </p>
+      <div className="container mx-auto px-6 py-6 max-w-[1600px]">
+        {/* Header */}
+        <div className="flex items-center justify-between flex-wrap gap-4 mb-6">
+          <div>
+            <h1 className="text-3xl font-bold text-white">Agent Playground</h1>
+            <p className="text-slate-400 mt-1">
+              Simulate how an AI agent interacts with paid API endpoints using the
+              x402 protocol on Hathor
+            </p>
+          </div>
+          <button
+            onClick={startTour}
+            disabled={tourIndex !== null}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-600 text-slate-300 hover:border-amber-500 hover:text-amber-400 transition-colors disabled:opacity-50"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+              <path
+                fillRule="evenodd"
+                d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z"
+                clipRule="evenodd"
+              />
+            </svg>
+            Guided Demo
+          </button>
         </div>
 
-        {/* Wallet bar */}
-        <div className="flex items-center justify-between bg-slate-800 rounded-xl border border-slate-700 p-4 mb-6">
-          {isConnected ? (
-            <>
-              <div className="flex items-center gap-4">
-                <div className="w-3 h-3 rounded-full bg-green-400"></div>
-                <div className="text-sm">
-                  <span className="text-slate-400">Connected: </span>
-                  <span className="text-white font-mono">{formatAddress(address || '')}</span>
-                  <span className="text-slate-500 ml-2">({network})</span>
-                </div>
-              </div>
-              <BalanceCard />
-            </>
-          ) : (
-            <>
-              <div className="flex items-center gap-4">
-                <div className="w-3 h-3 rounded-full bg-slate-500"></div>
-                <span className="text-slate-400 text-sm">Wallet not connected</span>
-              </div>
-              <button
-                onClick={() => setShowWalletModal(true)}
-                className="px-5 py-2 rounded-lg font-medium text-sm transition-colors hover:opacity-90"
-                style={{
-                  background:
-                    'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)',
-                  color: '#0f172a',
-                }}
-              >
-                Connect Wallet
-              </button>
-            </>
-          )}
-        </div>
+        {/* 3-column playground */}
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,340px)_1fr] xl:grid-cols-[minmax(280px,340px)_1fr_minmax(340px,420px)] gap-6 items-start">
+          {/* Left: agent config + spend tracker */}
+          <div className="space-y-6">
+            <AgentConfigCard />
+            <SpendTrackerCard />
+          </div>
 
-        {/* Main flow */}
-        <X402Fetch />
+          {/* Middle: endpoints + response */}
+          <div className="space-y-6">
+            <EndpointsCard />
+            <ResponseCard />
+          </div>
 
-        {/* How it works */}
-        <div className="mt-8 bg-slate-800 rounded-xl border border-slate-700 p-6">
-          <h3 className="text-lg font-bold text-white mb-4">How x402 hathor-direct works</h3>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-center">
-            {[
-              { step: '1', title: 'Fetch', desc: 'Request a paid API endpoint' },
-              { step: '2', title: '402', desc: 'Server responds with payment requirements' },
-              { step: '3', title: 'Pay + Sign', desc: 'Send tx + sign the request id with your key' },
-              { step: '4', title: 'Access', desc: 'Retry with the proof — get the data' },
-            ].map(({ step, title, desc }) => (
-              <div key={step} className="p-3">
-                <div className="w-8 h-8 rounded-full bg-amber-500 text-slate-900 font-bold flex items-center justify-center mx-auto mb-2">
-                  {step}
-                </div>
-                <p className="text-white font-medium">{title}</p>
-                <p className="text-xs text-slate-400">{desc}</p>
-              </div>
-            ))}
+          {/* Right: payment flow + tx log */}
+          <div className="lg:col-span-2 xl:col-span-1">
+            <PaymentFlowCard />
           </div>
         </div>
-      </main>
+      </div>
 
-      <WalletConnectionModal open={showWalletModal} onOpenChange={setShowWalletModal} />
+      <GuidedTour />
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <PlaygroundProvider>
+      <PlaygroundPage />
+    </PlaygroundProvider>
   );
 }
