@@ -98,7 +98,7 @@ services:
     # Runtime env for the headless-wallet proxy routes (server-side only).
     environment:
       HEADLESS_URL: ${HEADLESS_URL:-http://localhost:8002}
-      HEADLESS_WALLET_ID: ${HEADLESS_WALLET_ID:-x402}
+      HEADLESS_WALLET_ID: ${HEADLESS_WALLET_ID:-default}
       HUSDC_TOKEN_UID: ${HUSDC_TOKEN_UID:-001adcc82ba9722714c849cf607d30cd3cd9c7e95b0b3cb58e1eb476fa346980}
       FUND_AMOUNT_ATOMIC: ${FUND_AMOUNT_ATOMIC:-500}
       TREASURY_ADDRESS: ${TREASURY_ADDRESS:-WUcVUnahHUuGqFD52rgaM5Ef1HMG4ycMYg}

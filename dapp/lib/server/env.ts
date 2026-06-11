@@ -9,7 +9,9 @@ function int(value: string | undefined, fallback: number): number {
 export const serverEnv = {
   // Later the headless moves to a server: only this URL changes.
   headlessUrl: process.env.HEADLESS_URL || 'http://localhost:8002',
-  walletId: process.env.HEADLESS_WALLET_ID || 'x402',
+  // The real wallet-id is NOT committed — set HEADLESS_WALLET_ID in the
+  // deployment env (and in dapp/.env.local for local dev).
+  walletId: process.env.HEADLESS_WALLET_ID || 'default',
   tokenUid:
     process.env.HUSDC_TOKEN_UID ||
     '001adcc82ba9722714c849cf607d30cd3cd9c7e95b0b3cb58e1eb476fa346980',
