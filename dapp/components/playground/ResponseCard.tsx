@@ -1,7 +1,7 @@
 'use client';
 
 import { usePlayground } from '@/contexts/PlaygroundContext';
-import { formatHTR } from '@/lib/playground/mock';
+import { TOKEN_SYMBOL, explorerTxUrl, formatAmount } from '@/lib/playground/mock';
 
 export function ResponseCard() {
   const { response, isExecuting } = usePlayground();
@@ -15,9 +15,6 @@ export function ResponseCard() {
         <h3 className="text-lg font-bold text-white">Task result</h3>
         {response && (
           <div className="flex items-center gap-2">
-            <span className="text-xs px-2.5 py-1 rounded-full bg-slate-700 text-slate-300">
-              {response.totalMs}ms
-            </span>
             <span
               className={`text-xs px-2.5 py-1 rounded-full border ${
                 response.ok
@@ -29,7 +26,7 @@ export function ResponseCard() {
             </span>
             {response.priceCents !== null && (
               <span className="text-xs px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30">
-                {formatHTR(response.priceCents)} HTR
+                {formatAmount(response.priceCents)} {TOKEN_SYMBOL}
               </span>
             )}
           </div>
@@ -37,9 +34,21 @@ export function ResponseCard() {
       </div>
 
       {response ? (
-        <pre className="bg-slate-900 rounded-lg p-4 text-sm text-slate-300 overflow-auto flex-1 min-h-0">
-          {JSON.stringify(response.body, null, 2)}
-        </pre>
+        <>
+          <pre className="bg-slate-900 rounded-lg p-4 text-sm text-slate-300 overflow-auto flex-1 min-h-0">
+            {JSON.stringify(response.body, null, 2)}
+          </pre>
+          {response.txId && (
+            <a
+              href={explorerTxUrl(response.txId)}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex items-center gap-1.5 text-sm text-amber-400 hover:text-amber-300 hover:underline"
+            >
+              View the agent&apos;s {TOKEN_SYMBOL} payment on the explorer ↗
+            </a>
+          )}
+        </>
       ) : (
         <div className="flex-1 flex flex-col items-center justify-center py-12 text-center">
           <p className="text-slate-400">

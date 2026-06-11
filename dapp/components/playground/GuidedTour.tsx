@@ -13,13 +13,13 @@ interface TourStep {
 const TOUR_STEPS: TourStep[] = [
   {
     target: null,
-    title: 'Welcome to the Playground',
-    body: "This is a live simulation of how AI agents pay for API access using the x402 protocol on Hathor Network. We'll walk through the entire flow — from wallet setup to budget tracking.",
+    title: 'Welcome to Agentic Payments',
+    body: "This is a live demo of how AI agents pay for API access using the x402 protocol on Hathor Network. Every payment here is a real transaction on the Hathor testnet. We'll walk through the entire flow — from wallet setup to budget tracking.",
   },
   {
     target: 'config',
     title: 'Agent Wallet',
-    body: 'Every agent needs an on-chain identity. This wallet address is how the agent signs payments. In production, this maps to a real Hathor wallet — for now it is a mock you can regenerate freely.',
+    body: 'Every agent needs an on-chain identity. This is a real Hathor testnet address, created just for you and funded with 5.00 hUSDC. The agent signs its payments with this address.',
   },
   {
     target: 'policies',
@@ -29,34 +29,34 @@ const TOUR_STEPS: TourStep[] = [
   {
     target: 'endpoints',
     title: 'Choose an API',
-    body: "These are merchant endpoints priced with x402. Each shows its per-request cost in HTR. Let's start with the weather API — it's the cheapest at 0.01 HTR.",
+    body: "These are merchant endpoints priced with x402. Each shows its per-request cost in hUSDC. Let's start with the weather API — it's the cheapest at 0.01 hUSDC.",
     action: 'select-weather',
   },
   {
     target: 'send',
     title: 'Execute the Task',
-    body: 'When the agent calls this endpoint, the x402 client handles everything: detects the 402 challenge, signs an HTR payment, and resubmits the request — all in one fetch() call.',
+    body: 'When the agent calls this endpoint, the x402 client handles everything: detects the 402 challenge, pays in hUSDC with a real testnet transaction, signs the proof, and resubmits the request.',
     action: 'run-request',
   },
   {
     target: 'flow',
     title: 'x402 Payment Flow',
-    body: 'Watch the payment flow: HTTP request → 402 challenge → sign → verify → settle → data delivered. On Hathor the payment settles as a regular feeless UTXO transaction.',
+    body: 'Watch the payment flow: HTTP request → 402 challenge → pay & sign → verify → settle → data delivered. On Hathor the payment settles as a regular feeless UTXO transaction.',
   },
   {
     target: 'response',
     title: 'API Response',
-    body: "The data comes back just like a normal HTTP response. The agent doesn't need to know about payments — the x402 layer handles that transparently.",
+    body: "The data comes back just like a normal HTTP response — and you can open the agent's hUSDC payment on the Hathor explorer. The agent doesn't need to know about payments; the x402 layer handles that transparently.",
   },
   {
     target: 'spend',
     title: 'Budget Tracking',
-    body: 'Every payment is tracked in real time. The progress bar shows how much of the daily budget has been consumed. This is how operators maintain visibility and control.',
+    body: 'Every payment is tracked in real time, and the wallet balance is read straight from the chain. The progress bar shows how much of the daily budget has been consumed. This is how operators maintain visibility and control.',
   },
   {
     target: 'config',
     title: 'Guardrails in Action',
-    body: "The agent checks maxPerTransaction and maxPerDay before signing — lower the limits below an endpoint's price and it refuses automatically. Set the agent to 'paused' or 'revoked' to see facilitator-side rejections.",
+    body: "The agent checks maxPerTransaction and maxPerDay before paying — lower the limits below an endpoint's price and it refuses automatically, without touching the wallet. Setting the agent to 'paused' or 'revoked' blocks payments the same way.",
   },
   {
     target: null,
@@ -87,14 +87,17 @@ export function GuidedTour() {
     setSelectedId,
     runRequest,
     isExecuting,
+    sessionState,
   } = usePlayground();
 
   const [rect, setRect] = useState<Rect | null>(null);
   const stepRef = useRef<number | null>(null);
+  const runTriggeredRef = useRef<number | null>(null);
 
   const step = tourIndex !== null ? TOUR_STEPS[tourIndex] : null;
   const isLast = tourIndex === TOUR_STEPS.length - 1;
-  const waiting = step?.action === 'run-request' && isExecuting;
+  const waiting =
+    step?.action === 'run-request' && (isExecuting || sessionState !== 'ready');
 
   const measure = useCallback(() => {
     if (!step?.target) {
@@ -124,7 +127,17 @@ export function GuidedTour() {
     stepRef.current = tourIndex;
 
     if (isNewStep && step.action === 'select-weather') setSelectedId('weather');
-    if (isNewStep && step.action === 'run-request') void runRequest();
+    // Auto-run once per visit to this step — deferred until the wallet session
+    // is ready (the effect re-fires when sessionState flips to 'ready').
+    if (
+      step.action === 'run-request' &&
+      sessionState === 'ready' &&
+      runTriggeredRef.current !== tourIndex
+    ) {
+      runTriggeredRef.current = tourIndex;
+      void runRequest();
+    }
+    if (isNewStep && step.action !== 'run-request') runTriggeredRef.current = null;
 
     if (step.target) {
       const el = document.querySelector(`[data-tour="${step.target}"]`);
@@ -140,7 +153,7 @@ export function GuidedTour() {
       window.removeEventListener('resize', measure);
       window.removeEventListener('scroll', measure, true);
     };
-  }, [tourIndex, step, measure, setSelectedId, runRequest]);
+  }, [tourIndex, step, measure, setSelectedId, runRequest, sessionState]);
 
   // Re-measure when the run finishes (panels grow with content).
   useEffect(() => {

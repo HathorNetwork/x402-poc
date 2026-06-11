@@ -49,6 +49,8 @@ function buildAccept(req, routeConfig) {
   const resourceUrl = `${config.resourceServerPublicUrl}${req.path}`;
   const amount = String(routeConfig.mode === 'upto' ? routeConfig.maxPrice : routeConfig.price);
   const scheme = routeConfig.mode === 'upto' ? 'hathor-direct-upto' : 'hathor-direct';
+  const asset = routeConfig.asset || config.htrTokenUid;
+  const symbol = routeConfig.symbol || 'HTR';
 
   // Mint a fresh, server-issued challenge token. The HMAC commitments include
   // the route, amount, and payTo so a payment claim later can't be redirected.
@@ -59,7 +61,7 @@ function buildAccept(req, routeConfig) {
       route: resourceUrl,
       amount,
       payTo: config.sellerAddress,
-      asset: config.htrTokenUid,
+      asset,
       network: networkId(),
     },
     config.serverSecret,
@@ -67,14 +69,14 @@ function buildAccept(req, routeConfig) {
   );
 
   const description = routeConfig.mode === 'upto'
-    ? `Pay up to ${(routeConfig.maxPrice / 100).toFixed(2)} HTR — billed by actual usage, remainder refunded`
-    : `Pay ${(routeConfig.price / 100).toFixed(2)} HTR`;
+    ? `Pay up to ${(routeConfig.maxPrice / 100).toFixed(2)} ${symbol} — billed by actual usage, remainder refunded`
+    : `Pay ${(routeConfig.price / 100).toFixed(2)} ${symbol}`;
 
   return {
     scheme,
     network: networkId(),
     amount,
-    asset: config.htrTokenUid,
+    asset,
     payTo: config.sellerAddress,
     resource: resourceUrl,
     maxTimeoutSeconds: config.requestIdTtlSeconds,
@@ -337,6 +339,56 @@ app.get(
   }
 );
 
+// ---------------------------------------------------------------------------
+// Playground routes — exact scheme priced in the configured custom token
+// (PAYMENT_TOKEN_UID / PAYMENT_TOKEN_SYMBOL, e.g. hUSDC on testnet). Response
+// shapes match what the Agent Playground dapp renders.
+// ---------------------------------------------------------------------------
+
+const playgroundToken = {
+  asset: config.paymentTokenUid,
+  symbol: config.paymentTokenSymbol,
+};
+
+// Exact: GET /api/weather — 1 atomic unit (0.01 hUSDC)
+app.get(
+  '/api/weather',
+  x402Middleware({ mode: 'exact', price: 1, ...playgroundToken }),
+  async (_req, res) => {
+    res.json({
+      city: 'São Paulo',
+      temp_c: 24,
+      feels_like_c: 26,
+      conditions: 'Partly Cloudy',
+      humidity: 63,
+      wind: { speed_kmh: 12, direction: 'NE' },
+      forecast: [
+        { day: 'Tomorrow', high: 27, low: 19, conditions: 'Sunny' },
+        { day: 'In 2 days', high: 25, low: 18, conditions: 'Partly Cloudy' },
+        { day: 'In 3 days', high: 22, low: 17, conditions: 'Rain Showers' },
+      ],
+      timestamp: new Date().toISOString(),
+    });
+  }
+);
+
+// Exact: GET /api/market-data — 10 atomic units (0.10 hUSDC)
+app.get(
+  '/api/market-data',
+  x402Middleware({ mode: 'exact', price: 10, ...playgroundToken }),
+  async (_req, res) => {
+    res.json({
+      base: 'USD',
+      prices: {
+        HTR: { price: 0.041, change_24h_pct: 3.4 },
+        BTC: { price: 104250.0, change_24h_pct: -1.2 },
+        ETH: { price: 5230.5, change_24h_pct: 0.8 },
+      },
+      updated_at: new Date().toISOString(),
+    });
+  }
+);
+
 app.get('/health', (_req, res) => {
   res.json({
     status: 'healthy',
@@ -356,4 +408,6 @@ app.listen(config.resourceServerPort, () => {
   log('RESOURCE-SERVER', `Routes:`);
   log('RESOURCE-SERVER', `  GET /weather  — exact: ${(config.htrPaymentAmount / 100).toFixed(2)} HTR`);
   log('RESOURCE-SERVER', `  GET /generate — upto:  up to ${(config.generateMaxPrice / 100).toFixed(2)} HTR (usage-billed)`);
+  log('RESOURCE-SERVER', `  GET /api/weather     — exact: 0.01 ${config.paymentTokenSymbol}`);
+  log('RESOURCE-SERVER', `  GET /api/market-data — exact: 0.10 ${config.paymentTokenSymbol}`);
 });

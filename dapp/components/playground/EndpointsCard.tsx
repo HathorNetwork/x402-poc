@@ -1,11 +1,19 @@
 'use client';
 
 import { usePlayground } from '@/contexts/PlaygroundContext';
-import { formatHTR } from '@/lib/playground/mock';
+import { TOKEN_SYMBOL, formatAmount } from '@/lib/playground/mock';
 
 export function EndpointsCard() {
-  const { endpoints, selectedId, setSelectedId, isExecuting, runRequest } =
-    usePlayground();
+  const {
+    endpoints,
+    selectedId,
+    setSelectedId,
+    isExecuting,
+    runRequest,
+    sessionState,
+  } = usePlayground();
+
+  const ready = sessionState === 'ready';
 
   return (
     <div data-tour="endpoints" className="rounded-xl">
@@ -37,7 +45,7 @@ export function EndpointsCard() {
                   </span>
                 </div>
                 <span className="text-xs px-2.5 py-1 rounded-full bg-green-500/10 text-green-400 border border-green-500/20 whitespace-nowrap">
-                  {formatHTR(ep.priceCents)} HTR
+                  {formatAmount(ep.priceAtomic)} {TOKEN_SYMBOL}
                 </span>
               </div>
               <p className="text-sm text-slate-400">{ep.description}</p>
@@ -49,7 +57,7 @@ export function EndpointsCard() {
       <button
         data-tour="send"
         onClick={runRequest}
-        disabled={isExecuting}
+        disabled={isExecuting || !ready}
         className="w-full py-2.5 rounded-lg font-bold text-sm transition-opacity hover:opacity-90 disabled:opacity-80"
         style={{
           background: 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)',
@@ -61,6 +69,8 @@ export function EndpointsCard() {
             <span className="w-4 h-4 border-2 border-slate-900/40 border-t-slate-900 rounded-full animate-spin" />
             Executing...
           </span>
+        ) : !ready ? (
+          sessionState === 'wallet-error' ? 'Wallet error' : 'Preparing wallet...'
         ) : (
           'Execute task'
         )}

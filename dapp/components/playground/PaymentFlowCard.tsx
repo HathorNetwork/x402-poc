@@ -66,24 +66,17 @@ export function PaymentFlowCard() {
                 )}
               </div>
               <div className="pb-3 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span
-                    className={`font-medium ${
-                      step.state === 'error'
-                        ? 'text-red-400'
-                        : step.state === 'active'
-                          ? 'text-amber-400'
-                          : 'text-white'
-                    }`}
-                  >
-                    {step.label}
-                  </span>
-                  {step.ms !== undefined && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400">
-                      {step.ms}ms
-                    </span>
-                  )}
-                </div>
+                <span
+                  className={`font-medium ${
+                    step.state === 'error'
+                      ? 'text-red-400'
+                      : step.state === 'active'
+                        ? 'text-amber-400'
+                        : 'text-white'
+                  }`}
+                >
+                  {step.label}
+                </span>
                 {step.state === 'error' && (
                   <p className="text-xs font-mono mt-0.5 break-words text-red-400/80">
                     {step.detail}

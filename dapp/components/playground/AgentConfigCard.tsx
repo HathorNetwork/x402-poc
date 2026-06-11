@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { usePlayground } from '@/contexts/PlaygroundContext';
-import { AgentStatus, formatHTR } from '@/lib/playground/mock';
+import { AgentStatus, TOKEN_SYMBOL, formatAmount } from '@/lib/playground/mock';
 
 const STATUS_COLORS: Record<AgentStatus, string> = {
   active: 'text-green-400 border-green-500/40',
@@ -10,7 +10,7 @@ const STATUS_COLORS: Record<AgentStatus, string> = {
   revoked: 'text-red-400 border-red-500/40',
 };
 
-function HTRInput({
+function AmountInput({
   label,
   cents,
   onChangeCents,
@@ -19,11 +19,11 @@ function HTRInput({
   cents: number;
   onChangeCents: (cents: number) => void;
 }) {
-  const [text, setText] = useState(formatHTR(cents));
+  const [text, setText] = useState(formatAmount(cents));
 
   // Keep the input in sync if the value changes from outside.
   useEffect(() => {
-    setText(formatHTR(cents));
+    setText(formatAmount(cents));
   }, [cents]);
 
   const commit = () => {
@@ -31,7 +31,7 @@ function HTRInput({
     if (Number.isFinite(parsed) && parsed >= 0) {
       onChangeCents(Math.round(parsed * 100));
     } else {
-      setText(formatHTR(cents));
+      setText(formatAmount(cents));
     }
   };
 
@@ -48,7 +48,9 @@ function HTRInput({
           onKeyDown={(e) => e.key === 'Enter' && commit()}
           className="w-full bg-transparent px-3 py-2 text-sm text-white outline-none min-w-0"
         />
-        <span className="px-3 text-xs text-slate-400 select-none">HTR</span>
+        <span className="px-3 text-xs text-slate-400 select-none">
+          {TOKEN_SYMBOL}
+        </span>
       </div>
     </div>
   );
@@ -57,14 +59,15 @@ function HTRInput({
 export function AgentConfigCard() {
   const {
     walletAddress,
-    regenerateWallet,
+    sessionState,
+    sessionDetail,
+    retrySession,
     status,
     setStatus,
     maxPerTxCents,
     setMaxPerTxCents,
     maxPerDayCents,
     setMaxPerDayCents,
-    isExecuting,
   } = usePlayground();
 
   return (
@@ -75,7 +78,7 @@ export function AgentConfigCard() {
       <div className="flex items-start justify-between mb-1">
         <h3 className="text-lg font-bold text-white">Agent Configuration</h3>
         <span className="text-xs px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30">
-          Simulation
+          Live Testnet
         </span>
       </div>
       <p className="text-xs text-slate-400 mb-4">
@@ -83,22 +86,31 @@ export function AgentConfigCard() {
       </p>
 
       <label className="block text-xs text-slate-400 mb-1.5">Wallet Address</label>
-      <div className="flex gap-2 mb-4">
+      {sessionState === 'wallet-error' ? (
+        <div className="mb-4">
+          <div className="flex items-center justify-between bg-slate-700 border border-red-500/50 rounded-lg px-3 py-2">
+            <span className="text-sm text-red-400">Wallet error</span>
+            <button
+              onClick={retrySession}
+              className="text-xs px-2 py-1 rounded border border-slate-500 text-slate-300 hover:text-white hover:border-slate-300 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+          {sessionDetail && (
+            <p className="text-xs text-red-400/70 mt-1 break-words">{sessionDetail}</p>
+          )}
+        </div>
+      ) : (
         <input
           type="text"
           readOnly
-          value={walletAddress}
-          className="flex-1 min-w-0 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white font-mono truncate"
+          value={sessionState === 'ready' ? walletAddress : 'Loading wallet...'}
+          className={`w-full mb-4 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm font-mono truncate ${
+            sessionState === 'ready' ? 'text-white' : 'text-slate-400 animate-pulse'
+          }`}
         />
-        <button
-          onClick={regenerateWallet}
-          disabled={isExecuting}
-          title="Generate a new mock wallet"
-          className="px-3 rounded-lg border border-slate-600 bg-slate-700 text-slate-300 hover:text-amber-400 hover:border-amber-500 transition-colors disabled:opacity-40"
-        >
-          ↻
-        </button>
-      </div>
+      )}
 
       <div className="grid grid-cols-2 gap-3 mb-4">
         <div>
@@ -126,12 +138,12 @@ export function AgentConfigCard() {
       </div>
 
       <div data-tour="policies" className="grid grid-cols-2 gap-3 rounded-lg">
-        <HTRInput
+        <AmountInput
           label="Max per Transaction"
           cents={maxPerTxCents}
           onChangeCents={setMaxPerTxCents}
         />
-        <HTRInput
+        <AmountInput
           label="Max per Day"
           cents={maxPerDayCents}
           onChangeCents={setMaxPerDayCents}

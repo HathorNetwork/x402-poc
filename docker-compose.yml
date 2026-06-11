@@ -41,6 +41,8 @@ services:
       ZERO_CONF_MAX_AMOUNT: ${ZERO_CONF_MAX_AMOUNT:-9007199254740991}
       HTR_PAYMENT_AMOUNT: ${HTR_PAYMENT_AMOUNT:-100}
       GENERATE_MAX_PRICE: ${GENERATE_MAX_PRICE:-500}
+      PAYMENT_TOKEN_UID: ${PAYMENT_TOKEN_UID:-00}
+      PAYMENT_TOKEN_SYMBOL: ${PAYMENT_TOKEN_SYMBOL:-HTR}
       VERIFY_MODE: ${VERIFY_MODE:-self}
       FACILITATOR_URL: ${FACILITATOR_URL:-http://facilitator:8402}
     command: ["sh", "init-seller-wallet.sh", "node", "resource-server.js"]
@@ -93,6 +95,13 @@ services:
         NEXT_PUBLIC_RESOURCE_SERVER_URL: ${NEXT_PUBLIC_RESOURCE_SERVER_URL:-http://localhost:3000}
         NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-8264fff563181da658ce64ee80e80458}
         NEXT_PUBLIC_HATHOR_NODE_URL_TESTNET: ${NEXT_PUBLIC_HATHOR_NODE_URL_TESTNET:-https://node1.testnet.hathor.network/v1a}
+    # Runtime env for the headless-wallet proxy routes (server-side only).
+    environment:
+      HEADLESS_URL: ${HEADLESS_URL:-http://localhost:8002}
+      HEADLESS_WALLET_ID: ${HEADLESS_WALLET_ID:-x402}
+      HUSDC_TOKEN_UID: ${HUSDC_TOKEN_UID:-001adcc82ba9722714c849cf607d30cd3cd9c7e95b0b3cb58e1eb476fa346980}
+      FUND_AMOUNT_ATOMIC: ${FUND_AMOUNT_ATOMIC:-500}
+      TREASURY_ADDRESS: ${TREASURY_ADDRESS:-WUcVUnahHUuGqFD52rgaM5Ef1HMG4ycMYg}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/"]
       interval: 10s

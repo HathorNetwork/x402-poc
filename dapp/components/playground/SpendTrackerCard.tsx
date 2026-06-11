@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { usePlayground } from '@/contexts/PlaygroundContext';
-import { formatHTR } from '@/lib/playground/mock';
+import {
+  TOKEN_SYMBOL,
+  explorerTxUrl,
+  formatAmount,
+  shortHash,
+} from '@/lib/playground/mock';
 
 function timeToUtcMidnight(): string {
   const now = new Date();
@@ -14,7 +19,7 @@ function timeToUtcMidnight(): string {
 }
 
 export function SpendTrackerCard() {
-  const { spentCents, maxPerDayCents, spendEntries } = usePlayground();
+  const { spentCents, maxPerDayCents, spendEntries, balanceAtomic } = usePlayground();
   const [countdown, setCountdown] = useState('');
 
   useEffect(() => {
@@ -35,6 +40,14 @@ export function SpendTrackerCard() {
         Real-time budget usage for this session
       </p>
 
+      <div className="flex items-baseline justify-between mb-3">
+        <span className="text-xs text-slate-400">Wallet balance</span>
+        <span className="text-white font-bold">
+          {balanceAtomic === null ? '—' : formatAmount(balanceAtomic)}{' '}
+          <span className="text-slate-400 font-normal">{TOKEN_SYMBOL}</span>
+        </span>
+      </div>
+
       <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden mb-3">
         <div
           className="h-full rounded-full bg-hathor-gradient transition-all duration-500"
@@ -44,8 +57,11 @@ export function SpendTrackerCard() {
 
       <div className="flex items-baseline justify-between mb-1">
         <p className="text-white">
-          <span className="font-bold">{formatHTR(spentCents)}</span>
-          <span className="text-slate-400"> / {formatHTR(maxPerDayCents)} HTR</span>
+          <span className="font-bold">{formatAmount(spentCents)}</span>
+          <span className="text-slate-400">
+            {' '}
+            / {formatAmount(maxPerDayCents)} {TOKEN_SYMBOL}
+          </span>
         </p>
         <span className="text-sm text-slate-400">{pct.toFixed(1)}%</span>
       </div>
@@ -56,10 +72,21 @@ export function SpendTrackerCard() {
       {spendEntries.length > 0 && (
         <div className="mt-4 pt-3 border-t border-slate-700 space-y-1.5">
           {spendEntries.map((entry, i) => (
-            <div key={i} className="flex justify-between text-sm">
-              <span className="text-slate-300 font-mono">{entry.route}</span>
-              <span className="text-slate-400 font-mono">
-                -{formatHTR(entry.amountCents)} HTR
+            <div key={`${entry.txId}-${i}`} className="flex justify-between text-sm gap-2">
+              <span className="text-slate-300 font-mono truncate">{entry.route}</span>
+              <span className="whitespace-nowrap">
+                <span className="text-slate-400 font-mono">
+                  -{formatAmount(entry.amountCents)} {TOKEN_SYMBOL}
+                </span>
+                <a
+                  href={explorerTxUrl(entry.txId)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={`View tx ${entry.txId} on the explorer`}
+                  className="ml-2 text-xs text-amber-400 hover:text-amber-300 hover:underline font-mono"
+                >
+                  {shortHash(entry.txId)} ↗
+                </a>
               </span>
             </div>
           ))}

@@ -54,4 +54,9 @@ module.exports = {
   // Default per-route prices (atomic units; 1 HTR = 100).
   htrPaymentAmount: int(env.HTR_PAYMENT_AMOUNT, 100),
   generateMaxPrice: int(env.GENERATE_MAX_PRICE, 500),
+
+  // Custom token used by the /api/* playground routes (e.g. hUSDC on testnet).
+  // Defaults to HTR so the routes still work without the env set.
+  paymentTokenUid: env.PAYMENT_TOKEN_UID || '00',
+  paymentTokenSymbol: env.PAYMENT_TOKEN_SYMBOL || 'HTR',
 };
