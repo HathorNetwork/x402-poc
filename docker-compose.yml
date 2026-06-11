@@ -24,6 +24,33 @@ services:
       retries: 5
       start_period: 15s
 
+  # The PAYER wallet-headless for the Agent Playground: holds the hUSDC
+  # treasury (address 0) and one funded address per demo visitor. The dapp's
+  # /api/* proxy routes are its ONLY client and auto-start the real wallet via
+  # POST /start using HEADLESS_WALLET_ID + HEADLESS_SEED from the deploy env.
+  # SECURITY: intentionally NO published ports — the headless has no auth, so
+  # it must only be reachable on the internal compose network.
+  payer-wallet-headless:
+    image: hathornetwork/hathor-wallet-headless:latest
+    pull_policy: always
+    environment:
+      HEADLESS_HTTP_BIND: "0.0.0.0"
+      HEADLESS_HTTP_PORT: "8000"
+      HEADLESS_NETWORK: ${HATHOR_NETWORK:-testnet}
+      HEADLESS_SERVER: ${FULLNODE_URL:-https://node1.testnet.hathor.network}/v1a/
+      HEADLESS_TX_MINING_URL: ${TX_MINING_URL:-https://txmining.testnet.hathor.network/}
+      # Boot requirement only — the real payer wallet is started at runtime by
+      # the dapp via POST /start with HEADLESS_SEED. Classic all-"abandon"
+      # test seed (publicly known, no funds).
+      HEADLESS_SEED_DEFAULT: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+    entrypoint: ["node", "dist/index.js"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8000/wallet/status',r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   resource-server:
     build: .
     environment:
@@ -96,12 +123,15 @@ services:
         NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-8264fff563181da658ce64ee80e80458}
         NEXT_PUBLIC_HATHOR_NODE_URL_TESTNET: ${NEXT_PUBLIC_HATHOR_NODE_URL_TESTNET:-https://node1.testnet.hathor.network/v1a}
     # Runtime env for the headless-wallet proxy routes (server-side only).
+    # HEADLESS_WALLET_ID, HEADLESS_SEED and TREASURY_ADDRESS come from the
+    # deploy env (Dokploy) — the seed lets the dapp auto-start the wallet.
     environment:
-      HEADLESS_URL: ${HEADLESS_URL:-http://localhost:8002}
+      HEADLESS_URL: ${HEADLESS_URL:-http://payer-wallet-headless:8000}
       HEADLESS_WALLET_ID: ${HEADLESS_WALLET_ID:-default}
+      HEADLESS_SEED: ${HEADLESS_SEED:-}
       HUSDC_TOKEN_UID: ${HUSDC_TOKEN_UID:-001adcc82ba9722714c849cf607d30cd3cd9c7e95b0b3cb58e1eb476fa346980}
       FUND_AMOUNT_ATOMIC: ${FUND_AMOUNT_ATOMIC:-500}
-      TREASURY_ADDRESS: ${TREASURY_ADDRESS:-WUcVUnahHUuGqFD52rgaM5Ef1HMG4ycMYg}
+      TREASURY_ADDRESS: ${TREASURY_ADDRESS:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/"]
       interval: 10s
@@ -112,6 +142,8 @@ services:
       - "${DAPP_HOST_PORT:-4020}:3000"
     depends_on:
       resource-server:
+        condition: service_healthy
+      payer-wallet-headless:
         condition: service_healthy
 
 # Docker-managed named volume for the verifier's dedup ledger + blocklist

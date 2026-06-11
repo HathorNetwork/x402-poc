@@ -12,6 +12,11 @@ export const serverEnv = {
   // The real wallet-id is NOT committed — set HEADLESS_WALLET_ID in the
   // deployment env (and in dapp/.env.local for local dev).
   walletId: process.env.HEADLESS_WALLET_ID || 'default',
+  // Optional. When set, the proxy auto-starts the wallet (POST /start) if the
+  // headless reports it as not started — makes headless container restarts
+  // self-healing in the compose deployment. Leave unset when the wallet is
+  // managed externally (e.g. local dev against your own headless).
+  walletSeed: process.env.HEADLESS_SEED || '',
   tokenUid:
     process.env.HUSDC_TOKEN_UID ||
     '001adcc82ba9722714c849cf607d30cd3cd9c7e95b0b3cb58e1eb476fa346980',

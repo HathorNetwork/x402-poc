@@ -68,6 +68,32 @@ interface StatusResponse {
 
 export type WalletState = 'ready' | 'loading' | 'error';
 
+// Auto-start (used in the compose deployment): when HEADLESS_SEED is set and
+// the headless reports the wallet as not started, POST /start once and report
+// 'loading' while it syncs. Deduped so concurrent status checks fire one start.
+let startInFlight: Promise<void> | null = null;
+
+function startWallet(): void {
+  if (startInFlight) return;
+  startInFlight = call<{ success?: boolean; message?: string }>(
+    '/start',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        'wallet-id': serverEnv.walletId,
+        seed: serverEnv.walletSeed,
+      }),
+    },
+    30000
+  )
+    .then(() => undefined)
+    .catch(() => undefined)
+    .finally(() => {
+      // Allow a re-attempt on the next status check if this one failed.
+      startInFlight = null;
+    });
+}
+
 // Distinguishes "headless up but wallet still starting/syncing" (loading)
 // from "unreachable / wallet not started" (error).
 export async function getWalletState(): Promise<{ state: WalletState; detail?: string }> {
@@ -81,7 +107,12 @@ export async function getWalletState(): Promise<{ state: WalletState; detail?: s
   if (typeof status.statusCode === 'number') {
     return { state: 'loading', detail: status.statusMessage || 'Wallet syncing' };
   }
-  // No statusCode — typically {success:false, message:'Invalid wallet id'}
+  // No statusCode — typically {success:false, message:'Invalid wallet id'},
+  // i.e. the wallet was never started on this headless instance.
+  if (serverEnv.walletSeed) {
+    startWallet();
+    return { state: 'loading', detail: 'Starting wallet...' };
+  }
   return {
     state: 'error',
     detail: status.message || `Wallet '${serverEnv.walletId}' not started on headless`,
