@@ -4,6 +4,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -39,12 +40,6 @@ export interface PlaygroundResponse {
   body: unknown;
 }
 
-export interface TxLogEntry {
-  txId: string;
-  route: string;
-  amountCents: number;
-}
-
 export interface SpendEntry {
   route: string;
   amountCents: number;
@@ -73,10 +68,9 @@ interface PlaygroundContextValue {
   runRequest: () => Promise<void>;
   runCounter: number; // increments when a run finishes (tour uses this)
 
-  // flow + response + log
+  // flow + response
   flowSteps: FlowStep[];
   response: PlaygroundResponse | null;
-  txLog: TxLogEntry[];
 
   // guided tour
   tourIndex: number | null;
@@ -97,7 +91,11 @@ const jitter = (min: number, max: number) =>
 // --- provider ----------------------------------------------------------------
 
 export function PlaygroundProvider({ children }: { children: React.ReactNode }) {
-  const [walletAddress, setWalletAddress] = useState(() => generateMockAddress());
+  // Generated client-side only (Math.random in render would break hydration).
+  const [walletAddress, setWalletAddress] = useState('');
+  useEffect(() => {
+    setWalletAddress(generateMockAddress());
+  }, []);
   const [status, setStatus] = useState<AgentStatus>('active');
   const [maxPerTxCents, setMaxPerTxCents] = useState(50); // 0.50 HTR
   const [maxPerDayCents, setMaxPerDayCents] = useState(500); // 5.00 HTR
@@ -111,7 +109,6 @@ export function PlaygroundProvider({ children }: { children: React.ReactNode }) 
 
   const [flowSteps, setFlowSteps] = useState<FlowStep[]>([]);
   const [response, setResponse] = useState<PlaygroundResponse | null>(null);
-  const [txLog, setTxLog] = useState<TxLogEntry[]>([]);
 
   const [tourIndex, setTourIndex] = useState<number | null>(null);
 
@@ -277,10 +274,6 @@ export function PlaygroundProvider({ children }: { children: React.ReactNode }) 
         ...prev,
         { route: endpoint.path, amountCents: endpoint.priceCents },
       ]);
-      setTxLog((prev) => [
-        ...prev,
-        { txId, route: endpoint.path, amountCents: endpoint.priceCents },
-      ]);
 
       finish({
         ok: true,
@@ -329,7 +322,6 @@ export function PlaygroundProvider({ children }: { children: React.ReactNode }) 
       runCounter,
       flowSteps,
       response,
-      txLog,
       tourIndex,
       startTour,
       nextTourStep,
@@ -350,7 +342,6 @@ export function PlaygroundProvider({ children }: { children: React.ReactNode }) 
       runCounter,
       flowSteps,
       response,
-      txLog,
       tourIndex,
       startTour,
       nextTourStep,

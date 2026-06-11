@@ -9,14 +9,11 @@ export function EndpointsCard() {
 
   return (
     <div data-tour="endpoints" className="rounded-xl">
-      <h3 className="text-lg font-bold text-white mb-1">
+      <h3 className="text-lg font-bold text-white mb-3">
         Ask an AI agent to complete a task
       </h3>
-      <p className="text-xs text-slate-400 mb-4">
-        APIs with per-request pricing via x402
-      </p>
 
-      <div className="space-y-3 mb-4">
+      <div className="space-y-2 mb-3">
         {endpoints.map((ep) => {
           const selected = ep.id === selectedId;
           return (
@@ -24,7 +21,7 @@ export function EndpointsCard() {
               key={ep.id}
               onClick={() => setSelectedId(ep.id)}
               disabled={isExecuting}
-              className={`w-full text-left bg-slate-800 rounded-xl border p-4 transition-colors disabled:opacity-60 ${
+              className={`w-full text-left bg-slate-800 rounded-xl border px-4 py-3 transition-colors disabled:opacity-60 ${
                 selected
                   ? 'border-hathor-orange'
                   : 'border-slate-700 hover:border-slate-500'
@@ -53,7 +50,7 @@ export function EndpointsCard() {
         data-tour="send"
         onClick={runRequest}
         disabled={isExecuting}
-        className="w-full py-3.5 rounded-xl font-bold text-base transition-opacity hover:opacity-90 disabled:opacity-80"
+        className="w-full py-2.5 rounded-lg font-bold text-sm transition-opacity hover:opacity-90 disabled:opacity-80"
         style={{
           background: 'linear-gradient(244deg, rgb(255, 166, 0) 0%, rgb(255, 115, 0) 100%)',
           color: '#0f172a',

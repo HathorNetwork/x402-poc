@@ -1,7 +1,6 @@
 'use client';
 
 import { FlowStep, usePlayground } from '@/contexts/PlaygroundContext';
-import { formatHTR } from '@/lib/playground/mock';
 
 function StepIcon({ state }: { state: FlowStep['state'] }) {
   if (state === 'done') {
@@ -38,26 +37,26 @@ function StepIcon({ state }: { state: FlowStep['state'] }) {
 }
 
 export function PaymentFlowCard() {
-  const { flowSteps, txLog } = usePlayground();
+  const { flowSteps } = usePlayground();
 
   return (
     <div
       data-tour="flow"
-      className="bg-slate-800 rounded-xl border border-slate-700 p-5"
+      className="bg-slate-800 rounded-xl border border-slate-700 p-4 h-full flex flex-col"
     >
-      <h3 className="text-lg font-bold text-white mb-4">
+      <h3 className="text-lg font-bold text-white mb-3">
         Watch an AI agent pay for a service
       </h3>
 
       {flowSteps.length === 0 ? (
-        <div className="py-16 text-center">
+        <div className="flex-1 flex flex-col items-center justify-center py-10 text-center">
           <p className="text-slate-400">Waiting for a request...</p>
           <p className="text-sm text-slate-500 mt-1">
             The x402 payment flow will appear here
           </p>
         </div>
       ) : (
-        <div className="space-y-0">
+        <div className="space-y-0 flex-1 min-h-0 overflow-y-auto">
           {flowSteps.map((step, i) => (
             <div key={`${step.id}-${i}`} className="flex gap-3">
               <div className="flex flex-col items-center">
@@ -66,7 +65,7 @@ export function PaymentFlowCard() {
                   <div className="w-px flex-1 bg-slate-700 my-1" />
                 )}
               </div>
-              <div className="pb-5 min-w-0">
+              <div className="pb-3 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span
                     className={`font-medium ${
@@ -85,40 +84,17 @@ export function PaymentFlowCard() {
                     </span>
                   )}
                 </div>
-                <p
-                  className={`text-xs font-mono mt-0.5 break-words ${
-                    step.state === 'error' ? 'text-red-400/80' : 'text-slate-400'
-                  }`}
-                >
-                  {step.detail}
-                </p>
+                {step.state === 'error' && (
+                  <p className="text-xs font-mono mt-0.5 break-words text-red-400/80">
+                    {step.detail}
+                  </p>
+                )}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {txLog.length > 0 && (
-        <div data-tour="txlog" className="mt-2 pt-4 border-t border-slate-700">
-          <h4 className="text-sm font-medium text-slate-300 mb-3">Transaction Log</h4>
-          <div className="space-y-2">
-            {txLog.map((entry, i) => (
-              <div
-                key={`${entry.txId}-${i}`}
-                className="flex items-center justify-between bg-slate-900 rounded-lg px-3 py-2.5"
-                title={`tx ${entry.txId}`}
-              >
-                <span className="text-sm text-slate-300 font-mono truncate">
-                  {entry.route}
-                </span>
-                <span className="text-sm text-green-400 font-mono whitespace-nowrap ml-3">
-                  {formatHTR(entry.amountCents)} HTR
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

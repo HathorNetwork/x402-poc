@@ -9,7 +9,7 @@ export function ResponseCard() {
   return (
     <div
       data-tour="response"
-      className="bg-slate-800 rounded-xl border border-slate-700 p-5"
+      className="bg-slate-800 rounded-xl border border-slate-700 p-5 h-full flex flex-col"
     >
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
         <h3 className="text-lg font-bold text-white">Task result</h3>
@@ -37,11 +37,11 @@ export function ResponseCard() {
       </div>
 
       {response ? (
-        <pre className="bg-slate-900 rounded-lg p-4 text-sm text-slate-300 overflow-auto max-h-96">
+        <pre className="bg-slate-900 rounded-lg p-4 text-sm text-slate-300 overflow-auto flex-1 min-h-0">
           {JSON.stringify(response.body, null, 2)}
         </pre>
       ) : (
-        <div className="py-12 text-center">
+        <div className="flex-1 flex flex-col items-center justify-center py-12 text-center">
           <p className="text-slate-400">
             {isExecuting ? 'Waiting for the payment flow...' : 'No response yet'}
           </p>

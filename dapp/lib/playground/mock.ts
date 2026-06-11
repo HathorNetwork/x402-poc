@@ -83,28 +83,4 @@ export const PLAYGROUND_ENDPOINTS: PlaygroundEndpoint[] = [
       updated_at: new Date().toISOString(),
     }),
   },
-  {
-    id: 'research',
-    method: 'GET',
-    path: '/api/research',
-    description: 'AI-generated research summary with sources',
-    priceCents: 50, // 0.50 HTR
-    mockBody: () => ({
-      topic: 'HTTP-native micropayments for AI agents',
-      summary:
-        'The x402 protocol revives the HTTP 402 status code to let machines pay ' +
-        'for resources per request. On Hathor, payments settle as regular UTXO ' +
-        'transactions with no fees, making sub-cent API pricing viable.',
-      key_points: [
-        'No accounts or API keys — the wallet is the identity',
-        'Per-request pricing instead of subscriptions',
-        'Feeless settlement on Hathor enables true micropayments',
-        'Spending policies are enforced agent-side before signing',
-      ],
-      sources: [
-        { title: 'x402 protocol specification', url: 'https://x402.org' },
-        { title: 'Hathor Network docs', url: 'https://docs.hathor.network' },
-      ],
-    }),
-  },
 ];

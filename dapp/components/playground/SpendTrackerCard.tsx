@@ -28,7 +28,7 @@ export function SpendTrackerCard() {
   return (
     <div
       data-tour="spend"
-      className="bg-slate-800 rounded-xl border border-slate-700 p-5"
+      className="bg-slate-800 rounded-xl border border-slate-700 p-5 h-full overflow-y-auto"
     >
       <h3 className="text-lg font-bold text-white mb-1">Spend Tracker</h3>
       <p className="text-xs text-slate-400 mb-4">

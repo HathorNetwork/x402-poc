@@ -23,10 +23,10 @@ function PlaygroundPage() {
   }, [startTour]);
 
   return (
-    <div className="min-h-screen bg-slate-900">
-      <div className="container mx-auto px-6 py-6 max-w-[1600px]">
+    <div className="min-h-screen bg-slate-900 xl:h-screen xl:overflow-hidden">
+      <div className="container mx-auto px-6 py-4 max-w-7xl xl:h-full xl:flex xl:flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between flex-wrap gap-4 mb-6">
+        <div className="flex items-center justify-between flex-wrap gap-4 mb-4 shrink-0">
           <p className="text-xl text-slate-300">
             Simulate how an AI agent interacts with paid API endpoints using the
             x402 protocol on Hathor
@@ -47,23 +47,29 @@ function PlaygroundPage() {
           </button>
         </div>
 
-        {/* 3-column playground */}
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,340px)_1fr] xl:grid-cols-[minmax(280px,340px)_1fr_minmax(340px,420px)] gap-6 items-start">
+        {/* 3-column playground: config rail | trigger | execution rail */}
+        {/* On xl the grid is locked to the viewport: every column gets the same
+            height and long content (e.g. result JSON) scrolls inside its card. */}
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,330px)_1fr] xl:grid-cols-[minmax(280px,330px)_minmax(360px,1fr)_minmax(400px,520px)] gap-6 xl:flex-1 xl:min-h-0">
           {/* Left: agent config + spend tracker */}
-          <div className="space-y-6">
+          <div className="flex flex-col gap-4 min-h-0">
             <AgentConfigCard />
-            <SpendTrackerCard />
+            <div className="flex-1 min-h-0">
+              <SpendTrackerCard />
+            </div>
           </div>
 
-          {/* Middle: endpoints + response */}
-          <div className="space-y-6">
+          {/* Middle: pick a task, execute, watch the payment flow */}
+          <div className="flex flex-col gap-4 min-h-0">
             <EndpointsCard />
-            <ResponseCard />
+            <div className="flex-1 min-h-0">
+              <PaymentFlowCard />
+            </div>
           </div>
 
-          {/* Right: payment flow + tx log */}
-          <div className="lg:col-span-2 xl:col-span-1">
-            <PaymentFlowCard />
+          {/* Right: the task result */}
+          <div className="lg:col-span-2 xl:col-span-1 min-h-0">
+            <ResponseCard />
           </div>
         </div>
       </div>
