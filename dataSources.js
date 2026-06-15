@@ -95,22 +95,22 @@ const wmo = (code) => WMO[code] || 'Unknown';
 // --- weather (Open-Meteo, São Paulo, free / no key) -------------------------
 
 const WEATHER_SEED = {
-  city: 'São Paulo',
-  temp_c: 24,
-  feels_like_c: 26,
+  city: 'Ciudad de México',
+  temp_c: 22,
+  feels_like_c: 21,
   conditions: 'Partly Cloudy',
-  humidity: 63,
-  wind: { speed_kmh: 12, direction: 'NE' },
+  humidity: 45,
+  wind: { speed_kmh: 10, direction: 'NE' },
   forecast: [
-    { day: 'Tomorrow', high: 27, low: 19, conditions: 'Sunny' },
-    { day: 'In 2 days', high: 25, low: 18, conditions: 'Partly Cloudy' },
-    { day: 'In 3 days', high: 22, low: 17, conditions: 'Rain Showers' },
+    { day: 'Tomorrow', high: 24, low: 12, conditions: 'Sunny' },
+    { day: 'In 2 days', high: 23, low: 12, conditions: 'Partly Cloudy' },
+    { day: 'In 3 days', high: 21, low: 11, conditions: 'Rain Showers' },
   ],
   timestamp: new Date().toISOString(),
 };
 
 const WEATHER_URL =
-  'https://api.open-meteo.com/v1/forecast?latitude=-23.55&longitude=-46.63' +
+  'https://api.open-meteo.com/v1/forecast?latitude=19.43&longitude=-99.13' +
   '&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m' +
   '&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=4';
 
@@ -134,7 +134,7 @@ async function refreshWeather() {
   });
 
   return {
-    city: 'São Paulo',
+    city: 'Ciudad de México',
     temp_c: round(c.temperature_2m),
     feels_like_c: round(c.apparent_temperature),
     conditions: wmo(c.weather_code),
