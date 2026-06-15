@@ -16,6 +16,7 @@ const { mintRequestId } = require('./requestId');
 const { verifyDirectPayment } = require('./verifier');
 const { watchForVoid } = require('./voidWatcher');
 const { issueRefund } = require('./refundIssuer');
+const { getWeather, getMarketData } = require('./dataSources');
 
 if (!config.sellerAddress) {
   log('RESOURCE-SERVER', 'WARNING: SELLER_ADDRESS not set — 402 responses will be invalid');
@@ -350,42 +351,22 @@ const playgroundToken = {
   symbol: config.paymentTokenSymbol,
 };
 
-// Exact: GET /api/weather — 1 atomic unit (0.01 hUSDC)
+// Exact: GET /api/weather — 1 atomic unit (0.01 hUSDC). Body is served from the
+// in-memory cache (live values when LIVE_DATA_ENABLED, else seed) — never blocks.
 app.get(
   '/api/weather',
   x402Middleware({ mode: 'exact', price: 1, ...playgroundToken }),
   async (_req, res) => {
-    res.json({
-      city: 'São Paulo',
-      temp_c: 24,
-      feels_like_c: 26,
-      conditions: 'Partly Cloudy',
-      humidity: 63,
-      wind: { speed_kmh: 12, direction: 'NE' },
-      forecast: [
-        { day: 'Tomorrow', high: 27, low: 19, conditions: 'Sunny' },
-        { day: 'In 2 days', high: 25, low: 18, conditions: 'Partly Cloudy' },
-        { day: 'In 3 days', high: 22, low: 17, conditions: 'Rain Showers' },
-      ],
-      timestamp: new Date().toISOString(),
-    });
+    res.json(getWeather());
   }
 );
 
-// Exact: GET /api/market-data — 10 atomic units (0.10 hUSDC)
+// Exact: GET /api/market-data — 10 atomic units (0.10 hUSDC). Cached body.
 app.get(
   '/api/market-data',
   x402Middleware({ mode: 'exact', price: 10, ...playgroundToken }),
   async (_req, res) => {
-    res.json({
-      base: 'USD',
-      prices: {
-        HTR: { price: 0.041, change_24h_pct: 3.4 },
-        BTC: { price: 104250.0, change_24h_pct: -1.2 },
-        ETH: { price: 5230.5, change_24h_pct: 0.8 },
-      },
-      updated_at: new Date().toISOString(),
-    });
+    res.json(getMarketData());
   }
 );
 
@@ -410,4 +391,5 @@ app.listen(config.resourceServerPort, () => {
   log('RESOURCE-SERVER', `  GET /generate — upto:  up to ${(config.generateMaxPrice / 100).toFixed(2)} HTR (usage-billed)`);
   log('RESOURCE-SERVER', `  GET /api/weather     — exact: 0.01 ${config.paymentTokenSymbol}`);
   log('RESOURCE-SERVER', `  GET /api/market-data — exact: 0.10 ${config.paymentTokenSymbol}`);
+  log('RESOURCE-SERVER', `Live data: ${config.liveDataEnabled ? `on (refresh ${config.liveDataRefreshMs / 1000}s)` : 'off (serving seed values)'}`);
 });

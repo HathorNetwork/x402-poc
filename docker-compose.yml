@@ -73,6 +73,8 @@ services:
       GENERATE_MAX_PRICE: ${GENERATE_MAX_PRICE:-500}
       PAYMENT_TOKEN_UID: ${PAYMENT_TOKEN_UID:-00}
       PAYMENT_TOKEN_SYMBOL: ${PAYMENT_TOKEN_SYMBOL:-HTR}
+      LIVE_DATA_ENABLED: ${LIVE_DATA_ENABLED:-true}
+      LIVE_DATA_REFRESH_MS: ${LIVE_DATA_REFRESH_MS:-60000}
       VERIFY_MODE: ${VERIFY_MODE:-self}
       FACILITATOR_URL: ${FACILITATOR_URL:-http://facilitator:8402}
     command: ["sh", "init-seller-wallet.sh", "node", "resource-server.js"]

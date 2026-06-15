@@ -59,4 +59,11 @@ module.exports = {
   // Defaults to HTR so the routes still work without the env set.
   paymentTokenUid: env.PAYMENT_TOKEN_UID || '00',
   paymentTokenSymbol: env.PAYMENT_TOKEN_SYMBOL || 'HTR',
+
+  // Live cached data for the /api/* playground routes. When disabled, those
+  // routes serve their original hardcoded seed values. Refresh runs in the
+  // background; the request path never does I/O. Kill-switch for instant
+  // rollback: set LIVE_DATA_ENABLED=false.
+  liveDataEnabled: env.LIVE_DATA_ENABLED !== 'false',
+  liveDataRefreshMs: int(env.LIVE_DATA_REFRESH_MS, 60000),
 };
