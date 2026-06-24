@@ -1,8 +1,12 @@
 services:
-  # The seller's wallet-headless. Used ONLY by the upto scheme to issue refund
-  # transactions; the exact scheme doesn't touch it. Fund this wallet with HTR
-  # before running upto demos.
+  # The seller's wallet-headless — issues refund txs for the `upto` scheme ONLY.
+  # OFF BY DEFAULT: gated behind the "upto" profile, so the normal playground
+  # deploy (exact scheme only) never starts it and it never opens a fullnode
+  # WebSocket. The exact scheme never touches a wallet. To run upto demos:
+  #   docker compose --profile upto up        (and set SELLER_SEED)
+  # SECURITY: never expose this publicly — the headless has no auth.
   wallet-headless:
+    profiles: ["upto"]
     image: hathornetwork/hathor-wallet-headless:latest
     pull_policy: always
     environment:
@@ -35,6 +39,11 @@ services:
     # needs is only on the headless master branch (no release ships it yet).
     # Switch back to a version tag once a release includes sign-message.
     image: hathornetwork/hathor-wallet-headless:master
+    # To ship the wallet-lib WebSocket socket-leak fix, comment the image: line
+    # above and uncomment this build: block (see headless/README.md). Fail-closed.
+    # build:
+    #   context: ./headless
+    #   dockerfile: Dockerfile
     pull_policy: always
     environment:
       HEADLESS_HTTP_BIND: "0.0.0.0"
@@ -88,9 +97,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    depends_on:
-      wallet-headless:
-        condition: service_healthy
+    # No depends_on: the exact scheme needs no wallet at boot. The seller
+    # wallet-headless (upto only) is profile-gated off; init-seller-wallet.sh
+    # no-ops when SELLER_SEED is empty.
 
   # Optional standalone facilitator. Off by default. Bring up with:
   #   docker compose --profile facilitator up
@@ -130,6 +139,9 @@ services:
     # Runtime env for the headless-wallet proxy routes (server-side only).
     # HEADLESS_WALLET_ID, HEADLESS_SEED and TREASURY_ADDRESS come from the
     # deploy env (Dokploy) — the seed lets the dapp auto-start the wallet.
+    # HEADLESS_URL MUST point at the internal-only payer-wallet-headless (no
+    # published ports, :master so /wallet/sign-message exists). Do NOT override
+    # it to the public wallet-headless — that is the seller/upto wallet.
     environment:
       HEADLESS_URL: ${HEADLESS_URL:-http://payer-wallet-headless:8000}
       HEADLESS_WALLET_ID: ${HEADLESS_WALLET_ID:-default}
